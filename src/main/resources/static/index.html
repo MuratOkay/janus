@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Janus - Network Discovery</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+    <h1>Janus <small>Network Discovery</small></h1>
+    <label>Rapor <select id="reports" aria-label="Rapor seç"></select></label>
+    <input id="search" type="search" placeholder="IP / hostname / MAC ara" autocomplete="off">
+    <select id="layout" aria-label="Yerleşim">
+        <option value="force">Fiziksel topoloji</option>
+        <option value="vlan">VLAN grupları</option>
+        <option value="virt">Sanallaştırma</option>
+    </select>
+    <select id="color" aria-label="Renk">
+        <option value="type">Cihaz tipi</option>
+        <option value="source">Keşif yöntemi</option>
+        <option value="vlan">VLAN</option>
+    </select>
+    <button id="refresh">Yenile</button>
+    <span id="stats">Rapor yükleniyor...</span>
+</header>
+<main>
+    <svg id="graph" role="img" aria-label="Ağ topoloji grafiği"></svg>
+    <aside id="details" hidden>
+        <button id="close" aria-label="Kapat">×</button>
+        <h2 id="title"></h2>
+        <div id="content"></div>
+    </aside>
+    <div id="legend"></div>
+    <div id="error" role="alert" hidden></div>
+</main>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

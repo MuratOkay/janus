@@ -1,0 +1,210 @@
+# Janus Architecture
+
+Janus is a small, layered Java application. Discovery is orchestrated by a
+single class that drives pluggable scanners, fills a plain-Java model, and
+hands the model to either the CLI serializer or the Spring web layer.
+
+## 1. High-level flow
+
+```
+                 +-----------------------+
+   CLI args ---> | DiscoveryConfig       |  (parse + validate)
+                 +-----------+-----------+
+                             |
+                             v
+                 +-----------------------+
+                 | DiscoveryOrchestrator |  BFS over segments
+                 +-----------+-----------+
+                             |
+        +--------------------+---------------------+
+        |                    |                     |
+        v                    v                     v
+  Host discovery       Enrichment           Virtualization APIs
+  (HostScanners,       (SnmpScanner,        (Esxi/VCenter/Proxmox/
+   L2Scanner,           OsFingerprint,       Kvm/Libvirt/HyperV)
+   MulticastScanners)   Virtualization-
+                        Detector)
+        |                    |                     |
+        +--------------------+---------------------+
+                             |
+                             v
+                 +-----------------------+
+                 | DiscoveryResult model |  (plain POJOs)
+                 +-----------+-----------+
+                             |
+                 +-----------+-----------+
+                 |                       |
+                 v                       v
+          Main (Jackson)          ReportController/Service
+          -> JSON file            -> REST + web UI
+```
+
+## 2. Packages
+
+| Package | Responsibility |
+| --- | --- |
+| `com.g120s.janus` | Entry point (`Main`), Spring Boot app (`JanusApplication`), Jackson wiring (`JacksonConfig`). |
+| `com.g120s.janus.discovery` | Scanning strategies, SNMP, configuration parsing, OS fingerprinting, the orchestrator. |
+| `com.g120s.janus.virtualization` | Fingerprint-based detection, authenticated hypervisor APIs, VM-to-host matching. |
+| `com.g120s.janus.l2` | Raw-frame LLDP/CDP capture and parsing, topology link construction. |
+| `com.g120s.janus.model` | Serializable data model shared by CLI and web. |
+| `com.g120s.janus.web` | Spring MVC controller and report-loading service. |
+
+## 3. Configuration
+
+`DiscoveryConfig` is a plain class built by `DiscoveryConfig.fromArgs`. It:
+
+- Holds all tunables (timeouts, limits, enabled strategies) and parsed
+  `Credential` objects for hypervisor APIs.
+- Validates CIDRs, positive integers, and required credential fields, throwing
+  `IllegalArgumentException` with actionable messages.
+- Normalizes repeated `--snmp` flags so the default `public` community is dropped
+  only once.
+
+`Credential` is a small mutable class (not a record) so follow-up flags like
+`--hyperv-user` / `--vcenter-pass` can attach to the most recent host credential.
+
+## 4. Orchestration
+
+`DiscoveryOrchestrator.run()` is a breadth-first crawl:
+
+1. **Seeds.** Uses `--cidr` values, or the host's local IPv4 networks when none
+   are given (`localCidrs`).
+2. **BFS loop.** For each unvisited segment (bounded by `maxSubnets` and
+   `maxDepth`):
+   - `discoverHosts` runs the enabled host-discovery strategies.
+   - `enrich` is called for each device found in that segment.
+3. **Hypervisor APIs.** Each `Credential` is dispatched to the matching
+   discovery class; management subnets reported by hypervisors are pushed back
+   onto the frontier so they get crawled too.
+4. **LLDP/CDP.** Frames captured at startup are collected, applied via
+   `TopologyBuilder`, and management subnets found in advertisements are crawled.
+5. **Deduplicate + match.** `deduplicateVirtualization` prefers API-sourced hosts
+   over fingerprints; `VMHostMatcher.match` links VMs to hosts by MAC.
+
+The thread pool (`Executors.newFixedThreadPool`) is sized from `--threads` and
+shared by TCP probing and LLDP capture.
+
+### Host discovery strategies
+
+`discoverHosts` merges results into a `Map<String, Device>` keyed by IP so that
+multiple strategies enrich the same device:
+
+- **TCP** (`HostScanners.tcpScan`) — parallel connect probes over `probePorts`.
+- **ICMP** (`HostScanners.icmp`) — echo request.
+- **mDNS / SSDP / NetBIOS** (`MulticastScanners`) — multicast and name service.
+- **ARP** (`L2Scanner.arpScan`) — raw-socket ARP, only on the matching local
+  segment.
+
+### Enrichment
+
+`enrich` fills a device from the strongest signals available:
+
+1. **OUI vendor** — `VirtualizationDetector.vendorByOuiPrefix` maps the MAC prefix.
+2. **Virtualization-host hint** — well-known ports (902, 8006, 16509, 9440).
+3. **SNMP** (`SnmpScanner.query`, tried community by community until one works)
+   — sets `sysName`/`sysDescr`, infers `ROUTER`/`SWITCH`, queues new segments
+   from the routing table, and harvests the ARP table into peer devices.
+4. **Virtualization fingerprint** — `VirtualizationDetector.guessType`; on a hit,
+   a `VirtualizationHost` is registered and the device marked accordingly.
+5. **VM detection** — known VM MAC ranges mark the device `VIRTUAL_MACHINE`.
+6. **OS guess** — `OsFingerprint.guess` derives `osGuess` from `sysDescr`, open
+   ports, hostname and vendor.
+
+## 5. OS fingerprinting
+
+`OsFingerprint` is stateless and unit-testable. `guess(Device)` returns a stable,
+lower-case identity or `null`, checking signals in priority order:
+
+1. `fromSysDescr` — textual match on SNMP banners (Cisco IOS, JunOS, Windows,
+   ESXi, Darwin/macOS, FreeBSD/pfSense/OPNsense, generic Linux).
+2. `fromVendorAndPorts` — port fingerprints (RDP, SMB+RPC, ESXi 902+443,
+   SSH-only Unix, printer RAW/IPP) combined with OUI vendor.
+3. `fromHostname` — coarse hostname patterns (e.g. `esxi`, `vsphere`).
+
+Because `sysDescr` is the strongest evidence it is consulted first, so a Linux
+banner wins over an incidental open RDP port.
+
+## 6. Virtualization
+
+### Fingerprint detection
+
+`VirtualizationDetector` holds an OUI→vendor table and port-based heuristics:
+
+- `guessType` recognizes ESXi, vCenter, Proxmox, KVM, Hyper-V (only when
+  `looksLikeWindows` is true), Nutanix and Xen.
+- `looksLikeWindows` checks OUI, SNMP `sysDescr`, and Windows-specific port
+  combinations, so a workstation with WinRM open is not mistaken for a host.
+- `vmVendorByMac` / `isVirtualMachineMac` recognize hypervisor MAC ranges.
+
+### Authenticated discovery
+
+Each hypervisor is discovered through its native API, all of them appending
+`VirtualMachine` entries to a shared list:
+
+| Class | API / library |
+| --- | --- |
+| `EsxiDiscovery`, `VCenterDiscovery` | vijava (VMware SDK) |
+| `ProxmoxDiscovery` | Proxmox REST/HTTPS |
+| `KvmDiscovery`, `LibvirtDiscovery` | libvirt-java |
+| `HyperVDiscovery` | WinRM (winrm4j) |
+
+API results carry `source = "api"`; fingerprint-only hosts carry
+`source = "fingerprint"`. `deduplicateVirtualization` collapses duplicates by
+IP/ID, preferring API-sourced entries.
+
+### VM ↔ host matching
+
+`VMHostMatcher.match` normalizes MAC addresses, links each `VirtualMachine` to the
+host whose `vmMacs` contains it, and fills the VM's `ip` by cross-referencing
+discovered devices. This is what turns three separate lists into one coherent
+inventory.
+
+## 7. L2 topology
+
+`NeighborSniffer.capture` opens a raw socket on an interface for a bounded time
+(`--lldp-duration`) and collects LLDP/CDP frames. `LldpTlvParser` and
+`CdpTlvParser` decode them into `NeighborRecord`s. `TopologyBuilder.apply` turns
+those records into `TopologyLink` entries (local/remote device, port, VLAN,
+management IPs, capabilities).
+
+## 8. Web layer
+
+`JanusApplication` starts a Spring MVC app when `Main` is invoked with `--web`.
+`ReportController` exposes read-only endpoints over the latest report:
+
+- `/api/health` — liveness.
+- `/api/report` — the `DiscoveryResult` (optionally `?name=`).
+- `/api/reports` — available report files.
+- `/api/summary` — aggregate counts and duration.
+
+`ReportService` resolves the report path from `janus.report.path`, falling back to
+`janus.report.dir`, and deserializes with the shared Jackson configuration.
+Static assets (`index.html`, `style.css`, `app.js`) render a d3 force-directed
+topology.
+
+## 9. Serialization
+
+Janus runs on **Spring Boot 4 / Jackson 3** (`tools.jackson.*`). `JacksonConfig`
+provides:
+
+- A reusable `InetAddress` module (serialize to/from string), since `InetAddress`
+  is abstract and not deserializable by default.
+- A Spring `JsonMapperBuilderCustomizer` so the web mapper includes the module.
+- `cliMapper()` — a pretty-printing mapper used by `Main` for CLI output.
+
+Using one configuration for both CLI and web keeps the JSON contract identical.
+
+## 10. Testing
+
+Unit tests cover the pure logic that is easiest to get wrong and hardest to test
+live:
+
+- `DiscoveryConfigTests` — argument parsing and the repeated-`--snmp` fix.
+- `VirtualizationDetectorTests` — OUI resolution (including dash/uppercase MACs),
+  port fingerprints, VM MAC ranges.
+- `OsFingerprintTests` — sysDescr/port/vendor selection and priority ordering.
+- `ReportJsonRoundTripTests` — `InetAddress` ser/deser and failure behavior.
+- `JanusApplicationTests` — Spring context loads.
+
+Run everything with `./mvnw test`.

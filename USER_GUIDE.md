@@ -1,0 +1,232 @@
+# Janus User Guide
+
+This guide walks through installing Janus, running discoveries, reading the
+report, using the web UI, and tuning the crawl for larger environments.
+
+## 1. Installation
+
+### From source
+
+```bash
+git clone <repository-url> janus
+cd janus
+./mvnw clean package
+```
+
+Artifacts:
+
+- `target/janus-0.0.1-SNAPSHOT.jar` — executable, self-contained jar.
+- `target/janus-0.0.1-SNAPSHOT.jar.original` — thin jar (library use).
+
+Verify it runs:
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --help || java -jar target/janus-0.0.1-SNAPSHOT.jar
+```
+
+Running with no arguments prints the usage text.
+
+### Privileges
+
+- **TCP / ICMP / SNMP / mDNS / SSDP / NetBIOS** — no special privileges needed.
+- **ARP scanning and LLDP/CDP capture** — require raw socket access. On Linux run
+  with `sudo`, or grant the capability to the JVM:
+
+  ```bash
+  sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which java)")"
+  ```
+
+  Without raw-socket access Janus still runs; the affected strategies produce a
+  warning in the report and are simply skipped.
+
+## 2. Your first discovery
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar \
+  --cidr 192.168.1.0/24 \
+  --snmp public \
+  --out reports/home.json
+```
+
+What happens:
+
+1. Janus expands each `--cidr` into host addresses and probes the standard port
+   set (SSH, SMB, RDP, WinRM, ESXi, Proxmox, VNC, ...).
+2. It pings, and on matching local segments it also does ARP plus mDNS/SSDP/NetBIOS.
+3. Reachable hosts are enriched: OUI vendor lookup, SNMP `sysDescr`/`sysName`,
+   routing and ARP tables (new subnets are queued for crawling), virtualization
+   fingerprinting, and an OS guess.
+4. If virtualization credentials were supplied, their management subnets are added
+   to the crawl and their VMs are enumerated.
+5. VMs are matched to hosts by MAC address, LLDP/CDP is applied to build L2 links,
+   and the result is written to `--out`.
+
+The console prints a one-line summary:
+
+```
+Bitti. 42 cihaz, 7 sanal makine, 2 host, 3 ağ segmenti, 5 L2 bağlantısı.
+```
+
+## 3. Choosing discovery strategies
+
+All strategies are on by default. Turn off the ones you do not want:
+
+```bash
+# Fast, quiet, port-based only:
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --no-icmp --no-arp --no-mdns --no-ssdp --no-netbios --no-lldp --no-snmp
+
+# Passive-ish: reuse the SNMP routing table to discover neighbors:
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 --snmp public --no-tcp
+```
+
+Notes:
+
+- `--no-tcp` disables port probing, so port-based fingerprints (OS guess,
+  virtualization detection) lose most of their signal.
+- ARP only runs on segments that exactly match a local interface, because ARP
+  does not cross routers.
+
+## 4. Tuning for larger networks
+
+| Flag | Default | When to raise/lower |
+| --- | --- | --- |
+| `--threads` | 64 | Raise on beefy hosts scanning many subnets; lower if the NIC or target devices are overwhelmed. |
+| `--tcp-timeout` | 500 ms | Lower on low-latency LANs, raise over WAN/VPN links. |
+| `--snmp-timeout` | 1000 ms | Raise for slow or busy network devices. |
+| `--max-subnets` | 64 | Caps total segments crawled (protects against runaway route-table expansion). |
+| `--max-depth` | 4 | Caps crawl depth. |
+| `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
+
+Example for a /16 split into /24s with a bigger pool:
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar \
+  --cidr 10.20.0.0/16 --threads 256 --max-subnets 256 --out reports/dc.json
+```
+
+Segments larger than `/22` are rejected per segment to avoid accidental
+full-range sweeps; split them into smaller `--cidr` values.
+
+## 5. Virtualization inventory
+
+### VMware ESXi and vCenter
+
+```bash
+# Direct ESXi host
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --esxi 10.0.0.10,root,secret --out reports/esxi.json
+
+# vCenter (insecure TLS for self-signed certs)
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --vcenter 10.0.0.5 --vcenter-user administrator@vsphere.local \
+  --vcenter-pass secret --vcenter-insecure --out reports/vc.json
+```
+
+### Proxmox
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --proxmox 10.0.0.20,8006,root@pam,secret --out reports/proxmox.json
+```
+
+### KVM / libvirt
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --kvm 10.0.0.30,root,secret --out reports/kvm.json
+
+# or an explicit libvirt URI
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --libvirt qemu+ssh://root@10.0.0.30/system
+```
+
+### Microsoft Hyper-V
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --hyperv 10.0.0.40 --hyperv-user Administrator --hyperv-pass secret \
+  --hyperv-domain CONTOSO --hyperv-https --out reports/hyperv.json
+```
+
+When credentials are provided, the corresponding management subnets are added to
+the crawl and their VMs are enumerated over the API, then deduplicated against
+fingerprint-only results.
+
+## 6. Reading the report
+
+Every run writes a single JSON document (pretty-printed). A trimmed device entry:
+
+```json
+{
+  "ip": "192.168.1.20",
+  "mac": "00:0c:29:aa:bb:cc",
+  "hostname": "web-01",
+  "vendor": "vmware",
+  "kind": "VIRTUAL_MACHINE",
+  "openPorts": [22, 80, 443],
+  "services": [],
+  "discoveredBy": ["arp", "tcp", "snmp"],
+  "osGuess": "linux",
+  "virtualizationType": "vmware",
+  "ownerHostId": "esxi:192.168.1.10",
+  "metadata": { "sysDescr": "Linux web-01 6.1.0" }
+}
+```
+
+Field reference:
+
+- **kind** — `WORKSTATION`, `SERVER`, `ROUTER`, `SWITCH`, `FIREWALL`, `PRINTER`,
+  `IOT`, `MOBILE`, `STORAGE`, `VIRTUALIZATION_HOST`, `VIRTUAL_MACHINE`, `UNKNOWN`.
+- **vendor** — resolved from the MAC OUI (e.g. `vmware`, `dell`, `cisco`).
+- **osGuess** — one of `windows`, `linux`, `macos`, `ios`, `junos`, `freebsd`,
+  `esxi`, `printer-firmware`, or `null` when there is not enough signal.
+- **virtualizationType** — `esxi`, `vcenter`, `proxmox`, `kvm`, `hyperv`, `xen`,
+  `nutanix`, `virtualbox`.
+- **discoveredBy** — every strategy that observed the host (`arp`, `tcp`, `icmp`,
+  `snmp`, `mdns`, `ssdp`, `netbios`, `snmp-arp`, ...).
+- **metadata** — free-form; `sysDescr` holds the raw SNMP banner.
+
+Top-level `vhosts`, `vms`, `links`, `segments`, and `warnings` mirror the CLI
+summary and let consumers render topology or triage partial failures.
+
+## 7. Using the web UI
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --web --server.port=8080 \
+  --janus.report.path=reports/home.json
+# open http://localhost:8080
+```
+
+The UI renders a d3 force-directed topology from the report and lets you switch
+layouts, colors, search hosts, and inspect a device detail panel.
+
+REST endpoints (all GET):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/api/health` | Liveness: `{"status":"up","time":"..."}`. |
+| `/api/report` | Full `DiscoveryResult` for the latest (or `?name=` a specific) report. |
+| `/api/reports` | List of available report files. |
+| `/api/summary` | Counts: devices, vhosts, vms, segments, links, by kind, by protocol, duration. |
+
+Point it at a different report or directory with
+`--janus.report.path=FILE` or `--janus.report.dir=DIR`.
+
+## 8. Troubleshooting
+
+- **No devices at all.** Confirm the CIDR is reachable and not larger than `/22`.
+  Try disabling raw-socket strategies to isolate, then re-enable with privileges.
+- **ARP / LLDP warnings.** Expected without `CAP_NET_RAW`. Grant the capability or
+  run with `sudo`.
+- **SNMP shows nothing.** Verify the community and that UDP/161 reaches the device.
+  Check `warnings` in the JSON for `snmp@<ip>: ...` entries.
+- **Web UI is empty.** Ensure a report file exists at the configured path and that
+  `/api/health` responds; the UI loads `/api/report` on startup.
+- **Port probing is slow.** Lower `--tcp-timeout`; raise `--threads`.
+
+## 9. Safety and legal
+
+Scan only networks you own or are explicitly authorized to test. Port probing,
+ARP sweeps, and authenticated virtualization APIs can trigger IDS/IPS alarms and
+may be regulated in your environment.
