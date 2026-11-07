@@ -13,18 +13,18 @@ public final class HyperVDiscovery {
 
     private static final ObjectMapper MAP = new ObjectMapper();
 
-    /** Bir Hyper-V host'una bağlanmak için gereken parametreler. */
+    /** Parameters needed to connect to a Hyper-V host. */
     public record Options(String host, int port, boolean useHttps,
                           String domain, String user, String pass) {}
 
     public static VirtualizationHost discover(Options opt, List<VirtualMachine> sink) throws Exception {
         WinRmTool tool = buildTool(opt);
 
-        // ---- 1) Host temel bilgiler + yönetim IP'leri
+        // ---- 1) Host basic information + management IPs
         String hostOut = exec(tool, HOST_SCRIPT);
         JsonNode hostJson = MAP.readTree(extractJson(hostOut));
         if (hostJson == null || !hostJson.isObject())
-            throw new RuntimeException("Hyper-V host bilgisi alınamadı (PowerShell çıktısı JSON değil)");
+            throw new RuntimeException("Could not read Hyper-V host information (PowerShell output is not JSON)");
 
         VirtualizationHost host = new VirtualizationHost();
         host.type = "hyperv";
@@ -44,14 +44,14 @@ public final class HyperVDiscovery {
             }
         }
 
-        // ---- 2) VM listesi + adapter MAC'leri
+        // ---- 2) VM list + adapter MACs
         String vmOut = exec(tool, VM_SCRIPT);
         JsonNode vms = MAP.readTree(extractJson(vmOut));
         if (vms != null && !vms.isNull()) {
-            if (vms.isObject()) vms = MAP.createArrayNode().add(vms);   // tek VM → obje
+            if (vms.isObject()) vms = MAP.createArrayNode().add(vms);   // single VM → object
             for (JsonNode v : vms) {
                 VirtualMachine vm = new VirtualMachine();
-                vm.name = v.path("Name").asText("(isimsiz)");
+                vm.name = v.path("Name").asText("(unnamed)");
                 vm.uuid = v.path("Id").asText(null);
                 vm.hostId = host.id;
                 vm.powerState = v.path("State").asText(null);
@@ -61,13 +61,13 @@ public final class HyperVDiscovery {
                     String sw  = a.path("SwitchName").asText("");
                     if (mac != null) {
                         host.vmMacs.add(mac);
-                        if (vm.mac == null) vm.mac = mac;   // ilk MAC'i birincil say
+                        if (vm.mac == null) vm.mac = mac;   // treat the first MAC as primary
                     }
                     vm.nics.add((mac == null ? "no-mac" : mac) + "@" + sw);
 
                     String ipList = a.path("IPAddresses").asText("");
                     if (vm.ip == null && !ipList.isBlank()) {
-                        vm.ip = ipList.split(";")[0].trim();   // IS açıksa ilk IPv4
+                        vm.ip = ipList.split(";")[0].trim();   // first IPv4 if integration services are on
                     }
                 }
                 sink.add(vm);
@@ -76,9 +76,9 @@ public final class HyperVDiscovery {
         return host;
     }
 
-    // ================= PowerShell script'leri =================
+    // ================= PowerShell scripts =================
 
-    /** Host adı, OS sürümü ve tüm IPv4 arayüzleri (vEthernet dahil). */
+    /** Host name, OS version and all IPv4 interfaces (including vEthernet). */
     private static final String HOST_SCRIPT = """
         $ErrorActionPreference = 'Stop'
         Import-Module Hyper-V -ErrorAction Stop
@@ -103,7 +103,7 @@ public final class HyperVDiscovery {
         } | ConvertTo-Json -Depth 4 -Compress
         """;
 
-    /** Get-VM + her VM'nin ağ adaptörleri (MAC normalize edilerek). */
+    /** Get-VM + the network adapters of each VM (with the MAC normalized). */
     private static final String VM_SCRIPT = """
         $ErrorActionPreference = 'Stop'
         Import-Module Hyper-V -ErrorAction Stop
@@ -139,7 +139,7 @@ public final class HyperVDiscovery {
         $out | ConvertTo-Json -Depth 5 -Compress
         """;
 
-    // ================= yardımcılar =================
+    // ================= helpers =================
 
     private static WinRmTool buildTool(Options opt) {
         String user = (opt.domain() == null || opt.domain().isBlank())
@@ -149,7 +149,7 @@ public final class HyperVDiscovery {
         int port = opt.port() == 0 ? (opt.useHttps() ? 5986 : 5985) : opt.port();
 
         WinRmTool.Builder b = WinRmTool.Builder.builder(opt.host(), user, opt.pass());
-        b.setAuthenticationScheme("NTLM");
+        b.authenticationScheme("NTLM");
         b.port(port);
         b.useHttps(opt.useHttps());
         WinRmTool tool = b.build();
@@ -175,7 +175,7 @@ public final class HyperVDiscovery {
                hex.substring(6,8)+":"+hex.substring(8,10)+":"+hex.substring(10,12);
     }
 
-    /** WinRM bazen başına uyarı/log ekler; JSON süslü/parantezli kısmı ayıklar. */
+    /** WinRM sometimes prepends warnings/logs; this extracts the curly/round bracketed JSON part. */
     private static String extractJson(String s) {
         if (s == null || s.isBlank()) return "null";
         int first = -1, last = -1;

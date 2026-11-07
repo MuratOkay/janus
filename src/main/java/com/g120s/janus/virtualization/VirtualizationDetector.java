@@ -7,11 +7,11 @@ import java.util.Set;
 public final class VirtualizationDetector {
 
     /**
-     * Yaygın donanım/OS üreticileri için OUI tablosu.
-     * MAC'in ilk 3 baytı (XX:XX:XX) ile eşleşir.
+     * OUI table for common hardware/OS vendors.
+     * Matches the first 3 bytes (XX:XX:XX) of the MAC.
      */
     private static final Map<String, String> OUI_VENDORS = Map.ofEntries(
-            // Sanallaştırma platformları
+            // Virtualization platforms
             Map.entry("00:0c:29", "vmware"),
             Map.entry("00:50:56", "vmware"),
             Map.entry("00:05:69", "vmware"),
@@ -24,7 +24,7 @@ public final class VirtualizationDetector {
             Map.entry("50:6b:8d", "nutanix"),
             Map.entry("08:00:27", "virtualbox"),
             Map.entry("0a:00:27", "virtualbox"),
-            // Sunucu donanımı
+            // Server hardware
             Map.entry("00:14:4f", "oracle"),
             Map.entry("00:1b:21", "intel"),
             Map.entry("00:1e:67", "intel"),
@@ -42,7 +42,7 @@ public final class VirtualizationDetector {
             Map.entry("00:0a:f7", "broadcom"),
             Map.entry("00:1b:44", "citrix"),
             Map.entry("00:1b:78", "citrix"),
-            // Ağ donanımı
+            // Network hardware
             Map.entry("00:1b:17", "cisco"),
             Map.entry("00:1e:13", "cisco"),
             Map.entry("00:26:0b", "cisco"),
@@ -54,7 +54,7 @@ public final class VirtualizationDetector {
             Map.entry("00:24:a5", "ubiquiti")
     );
 
-    /** Açık portlar + banner + OUI'ye bakarak host tipini tahmin eder. */
+    /** Guesses the host type by looking at open ports + banner + OUI. */
     public static String guessType(Device d) {
         Set<Integer> p = d.openPorts;
         if (p.contains(902) || (p.contains(443) && p.contains(427) && p.contains(80)))
@@ -70,9 +70,9 @@ public final class VirtualizationDetector {
     }
 
     /**
-     * WinRM açık bir cihazın gerçekten Windows host olup olmadığını doğrular.
-     * Sadece port sayısına bakmak, WinRM açık bir iş istasyonunu yanlışlıkla
-     * sanallaştırma host'u saymaya yol açıyordu.
+     * Verifies whether a device with WinRM open is really a Windows host.
+     * Looking at the port number alone caused a workstation with WinRM open to be
+     * mistakenly counted as a virtualization host.
      */
     public static boolean looksLikeWindows(Device d) {
         String vendor = vendorOUI(d);
@@ -80,31 +80,31 @@ public final class VirtualizationDetector {
         String descr = String.valueOf(d.metadata.getOrDefault("sysDescr", "")).toLowerCase();
         if (descr.contains("windows") || descr.contains("hyper-v")) return true;
         Set<Integer> p = d.openPorts;
-        // Windows'a özgü port kombinasyonları (RDP / SMB + RPC)
+        // Windows-specific port combinations (RDP / SMB + RPC)
         return p.contains(3389) || (p.contains(445) && p.contains(135));
     }
 
-    /** MAC adresindeki OUI'yi üretici/tip adına çevirir; bilinmiyorsa "". */
+    /** Translates the OUI in the MAC address into a vendor/type name; "" if unknown. */
     public static String vendorOUI(Device d) {
         return vendorByOuiPrefix(d.mac);
     }
 
-    /** OUI ön ekinden üretici adı (küçük harf) döndürür. */
+    /** Returns the vendor name (lowercase) for the OUI prefix. */
     public static String vendorByOuiPrefix(String mac) {
         String prefix = ouiPrefix(mac);
         return prefix == null ? "" : OUI_VENDORS.getOrDefault(prefix, "");
     }
 
-    /** MAC adresinden "aa:bb:cc" biçiminde normalize edilmiş OUI ön eki. */
+    /** OUI prefix normalized into "aa:bb:cc" form from the MAC address. */
     public static String ouiPrefix(String mac) {
         if (mac == null) return null;
-        // Ayraç farkı (aa-bb-cc / aa:bb:cc / aabb.ccdd.eeff) normalize edilmeli
+        // Separator differences (aa-bb-cc / aa:bb:cc / aabb.ccdd.eeff) must be normalized
         String normalized = mac.trim().toLowerCase().replace('-', ':');
         if (normalized.length() < 8) return null;
         return normalized.substring(0, 8);
     }
 
-    /** Sanal makine MAC OUI aralıkları. */
+    /** Virtual machine MAC OUI ranges. */
     public static String vmVendorByMac(String mac) {
         String pref = ouiPrefix(mac);
         if (pref == null) return null;
@@ -120,7 +120,7 @@ public final class VirtualizationDetector {
         };
     }
 
-    /** Cihaz bir sanal makine mi? */
+    /** Is the device a virtual machine? */
     public static boolean isVirtualMachineMac(String mac) {
         return vmVendorByMac(mac) != null;
     }

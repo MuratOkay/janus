@@ -11,9 +11,9 @@ import java.net.InetAddress;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Rapor JSON'unun yazılıp geri okunabilmesi kritik: web arayüzü tamamen
- * bu dosyaya dayanıyor. {@link java.net.InetAddress} alanları bir dönem
- * deserileştirilemiyordu ve tüm /api/* uçları 500 dönüyordu.
+ * Being able to write the report JSON and read it back is critical: the web interface
+ * relies on this file entirely. {@link java.net.InetAddress} fields used to be
+ * non-deserializable and every /api/* endpoint returned 500.
  */
 class ReportJsonRoundTripTests {
 
@@ -30,7 +30,7 @@ class ReportJsonRoundTripTests {
         original.devices.add(device);
 
         String json = mapper.writeValueAsString(original);
-        assertTrue(json.contains("\"192.168.1.10\""), "IP düz metin olarak yazılmalı");
+        assertTrue(json.contains("\"192.168.1.10\""), "the IP must be written as plain text");
 
         DiscoveryResult decoded = mapper.readValue(json, DiscoveryResult.class);
         assertEquals(1, decoded.devices.size());
@@ -52,7 +52,7 @@ class ReportJsonRoundTripTests {
     @Test
     void invalidIpFailsLoudly() {
         String json = """
-                {"devices":[{"ip":"bu-bir-ip-degil"}],"segments":[],"vms":[],
+                {"devices":[{"ip":"this-is-not-an-ip"}],"segments":[],"vms":[],
                  "vhosts":[],"links":[],"warnings":[],"startedAt":0,"finishedAt":0}
                 """;
         assertThrows(Exception.class, () -> mapper.readValue(json, DiscoveryResult.class));

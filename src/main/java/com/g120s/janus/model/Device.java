@@ -10,8 +10,11 @@ public class Device {
     }
 
     public InetAddress ip;
-    public String mac; // aa:bb:cc:dd:ee:ff (küçük harf)
-    public String hostname;
+    public String mac; // aa:bb:cc:dd:ee:ff (lowercase)
+    public String hostname;      // best name (chosen among the sources)
+    public Set<String> aliases = new TreeSet<>();   // other names of the same device
+    public Map<String, String> hostnamesBySource = new TreeMap<>(); // source -> name (for auditing)
+    public String fqdn;          // fully qualified name such as PTR / TLS CN
     public String vendor; // OUI lookup
     public Kind kind = Kind.UNKNOWN;
     public Set<Integer> openPorts = new TreeSet<>();
@@ -19,7 +22,7 @@ public class Device {
     public Set<String> discoveredBy = new TreeSet<>(); // arp, tcp:22, snmp, mdns...
     public String osGuess;
     public String virtualizationType; // esxi, vcenter, proxmox, kvm, hyperv, xen, nutanix, virtualbox
-    public String ownerHostId; // VM ise bağlı olduğu host kimliği (mac/ip/uuid)
+    public String ownerHostId; // if a VM, the id of the host it belongs to (mac/ip/uuid)
     public Map<String, String> metadata = new HashMap<>();
 
     @Override

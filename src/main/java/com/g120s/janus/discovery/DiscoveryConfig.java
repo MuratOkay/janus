@@ -32,6 +32,8 @@ public final class DiscoveryConfig {
     public int maxDepth = 4;
     public int lldpDurationMs = 45_000;
     public String outputPath = "discovery-report.json";
+    public int dnsTimeoutMs = 800;
+    public String dnsServer;          // null = system default
     public boolean tcp = true;
     public boolean icmp = true;
     public boolean arp = true;
@@ -40,6 +42,8 @@ public final class DiscoveryConfig {
     public boolean netbios = true;
     public boolean snmp = true;
     public boolean lldp = true;
+    public boolean dns = true;        // reverse DNS name resolution
+    public boolean tlsNames = true;   // TLS certificate CN/SAN name resolution
 
     public static DiscoveryConfig fromArgs(String[] args) {
         DiscoveryConfig config = new DiscoveryConfig();
@@ -60,6 +64,8 @@ public final class DiscoveryConfig {
                 case "--threads" -> config.threadPool = positiveInt(value(args, ++i, option), option);
                 case "--tcp-timeout" -> config.tcpTimeoutMs = positiveInt(value(args, ++i, option), option);
                 case "--snmp-timeout" -> config.snmpTimeoutMs = positiveInt(value(args, ++i, option), option);
+                case "--dns-timeout" -> config.dnsTimeoutMs = positiveInt(value(args, ++i, option), option);
+                case "--dns-server" -> config.dnsServer = nonBlank(value(args, ++i, option), option);
                 case "--max-subnets" -> config.maxSubnets = positiveInt(value(args, ++i, option), option);
                 case "--max-depth" -> config.maxDepth = positiveInt(value(args, ++i, option), option);
                 case "--lldp-duration" -> config.lldpDurationMs = positiveInt(value(args, ++i, option), option);
@@ -77,6 +83,10 @@ public final class DiscoveryConfig {
                 case "--no-netbios" -> config.netbios = false;
                 case "--no-snmp" -> config.snmp = false;
                 case "--no-lldp" -> config.lldp = false;
+                case "--dns" -> config.dns = true;
+                case "--no-dns" -> config.dns = false;
+                case "--tls-names" -> config.tlsNames = true;
+                case "--no-tls-names" -> config.tlsNames = false;
                 case "--esxi" -> config.vmCreds.add(csvCredential(
                         value(args, ++i, option), "esxi", 22, "host,user,password"));
                 case "--proxmox" -> config.vmCreds.add(csvCredential(
@@ -100,11 +110,11 @@ public final class DiscoveryConfig {
                         "libvirt", nonBlank(value(args, ++i, option), option), 0, null, null));
                 case "--libvirt-user" -> lastCredential(config, "libvirt", option).user = value(args, ++i, option);
                 case "--libvirt-pass" -> lastCredential(config, "libvirt", option).passOrKey = value(args, ++i, option);
-                default -> throw new IllegalArgumentException("Bilinmeyen seçenek: " + option);
+                default -> throw new IllegalArgumentException("Unknown option: " + option);
             }
         }
         if (config.seedCidrs.stream().distinct().count() != config.seedCidrs.size()) {
-            throw new IllegalArgumentException("--cidr aynı ağ için birden fazla kez verilemez");
+            throw new IllegalArgumentException("--cidr cannot be given more than once for the same network");
         }
         validateCredentials(config.vmCreds);
         return config;
@@ -114,7 +124,7 @@ public final class DiscoveryConfig {
         String[] parts = raw.split(",", kind.equals("proxmox") ? 4 : 3);
         int expected = kind.equals("proxmox") ? 4 : 3;
         if (parts.length != expected) {
-            throw new IllegalArgumentException("--" + kind + " biçimi: " + format);
+            throw new IllegalArgumentException("--" + kind + " format: " + format);
         }
         int port = kind.equals("proxmox") ? positiveInt(parts[1], "--proxmox port") : defaultPort;
         int userIndex = kind.equals("proxmox") ? 2 : 1;
@@ -129,7 +139,7 @@ public final class DiscoveryConfig {
             Credential credential = config.vmCreds.get(i);
             if (credential.kind.equals(kind)) return credential;
         }
-        throw new IllegalArgumentException("Önce --" + kind + " <host/uri> vermelisiniz (" + option + ")");
+        throw new IllegalArgumentException("Provide --" + kind + " <host/uri> first (" + option + ")");
     }
 
     private static void validateCredentials(List<Credential> credentials) {
@@ -143,13 +153,13 @@ public final class DiscoveryConfig {
 
     private static String value(String[] args, int index, String option) {
         if (index >= args.length || args[index].startsWith("--")) {
-            throw new IllegalArgumentException(option + " için bir değer gerekli");
+            throw new IllegalArgumentException("a value is required for " + option);
         }
         return args[index];
     }
 
     private static String nonBlank(String value, String option) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException(option + " boş olamaz");
+        if (value == null || value.isBlank()) throw new IllegalArgumentException(option + " must not be blank");
         return value;
     }
 
@@ -159,25 +169,25 @@ public final class DiscoveryConfig {
             if (parsed > 0) return parsed;
         } catch (NumberFormatException ignored) {
         }
-        throw new IllegalArgumentException(option + " pozitif bir tam sayı olmalı");
+        throw new IllegalArgumentException(option + " must be a positive integer");
     }
 
     private static String requireCidr(String cidr) {
         String[] parts = cidr.split("/", -1);
-        if (parts.length != 2) throw new IllegalArgumentException("Geçersiz CIDR: " + cidr);
+        if (parts.length != 2) throw new IllegalArgumentException("Invalid CIDR: " + cidr);
         try {
             int prefix = Integer.parseInt(parts[1]);
             String[] octets = parts[0].split("\\.", -1);
             if (prefix < 0 || prefix > 32 || octets.length != 4) {
-                throw new IllegalArgumentException("Geçersiz IPv4 CIDR: " + cidr);
+                throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr);
             }
             for (String octet : octets) {
                 int value = Integer.parseInt(octet);
-                if (value < 0 || value > 255) throw new IllegalArgumentException("Geçersiz IPv4 CIDR: " + cidr);
+                if (value < 0 || value > 255) throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr);
             }
             return cidr;
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Geçersiz IPv4 CIDR: " + cidr, e);
+            throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr, e);
         }
     }
 }

@@ -91,7 +91,7 @@
     		<artifactId>winrm4j</artifactId>
     		<version>0.12.0</version>
 		</dependency>
-		<!-- winrm4j'nin HTTPS için kullandığı HttpClient (annotated) -->
+		<!-- the HttpClient (annotated) that winrm4j uses for HTTPS -->
 		<dependency>
     		<groupId>org.apache.httpcomponents</groupId>
     		<artifactId>httpclient</artifactId>

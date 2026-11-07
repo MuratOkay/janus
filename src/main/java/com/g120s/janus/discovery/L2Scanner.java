@@ -12,11 +12,11 @@ import java.util.concurrent.TimeoutException;
 public final class L2Scanner {
     public record ArpEntry(String ip, String mac) {}
 
-    /** Bir arayüzde /24 için ARP taraması; katman 2 canlılık altın standardıdır. */
+    /** ARP scan for a /24 on one interface; the gold standard for layer 2 liveness. */
     public static List<ArpEntry> arpScan(String ifName, String ipv4Cidr,
                                          int timeoutMs) throws Exception {
         PcapNetworkInterface nif = Pcaps.getDevByName(ifName);
-        if (nif == null) throw new IllegalArgumentException("iface yok: " + ifName);
+        if (nif == null) throw new IllegalArgumentException("interface not found: " + ifName);
 
         InetAddress localIp = nif.getAddresses().stream()
                 .map(PcapAddress::getAddress)
@@ -86,7 +86,7 @@ public final class L2Scanner {
             (byte)(v>>24),(byte)(v>>16),(byte)(v>>8),(byte)v});
     }
 
-    /** LLDP (0x88CC) ve CDP (SNAP 0x2000) paketlerini dinler; komşu IP/switch port bilgisi verir. */
+    /** Listens for LLDP (0x88CC) and CDP (SNAP 0x2000) packets; yields neighbor IP/switch port info. */
     public static List<String> sniffNeighbors(String ifName, int durationMs) throws Exception {
         PcapNetworkInterface nif = Pcaps.getDevByName(ifName);
         PcapHandle h = nif.openLive(65536, PcapNetworkInterface.PromiscuousMode.PROMISCUOUS, 10);
@@ -96,7 +96,7 @@ public final class L2Scanner {
         while (System.currentTimeMillis() < end) {
             try {
                 Packet p = h.getNextPacketEx();
-                // payload'da yazdırılabilir stringleri kabaca topla (Chassis ID/Port ID/TTL/Mgmt Addr)
+                // roughly collect printable strings from the payload (Chassis ID/Port ID/TTL/Mgmt Addr)
                 byte[] raw = p.getRawData();
                 StringBuilder sb = new StringBuilder();
                 for (byte b : raw) {

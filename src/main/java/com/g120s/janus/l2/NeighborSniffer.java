@@ -11,9 +11,9 @@ public final class NeighborSniffer {
     private NeighborSniffer() {}
 
     public static List<NeighborRecord> capture(CaptureOptions options) throws Exception {
-        if (options.durationMs() <= 0) throw new IllegalArgumentException("Dinleme süresi pozitif olmalı");
+        if (options.durationMs() <= 0) throw new IllegalArgumentException("Capture duration must be positive");
         PcapNetworkInterface networkInterface = Pcaps.getDevByName(options.iface());
-        if (networkInterface == null) throw new IllegalArgumentException("Arayüz bulunamadı: " + options.iface());
+        if (networkInterface == null) throw new IllegalArgumentException("Interface not found: " + options.iface());
         String localMac = networkInterface.getLinkLayerAddresses().isEmpty()
                 ? null : LldpTlvParser.mac(networkInterface.getLinkLayerAddresses().get(0).getAddress(), 0);
 

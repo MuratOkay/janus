@@ -40,7 +40,7 @@ public final class EsxiDiscovery {
                 if (ps.find()) vm.powerState = ps.group(1);
                 sink.add(vm);
             }
-            // Yönetim arayüzlerindeki subnetler → keşif için ek ağ
+            // Subnets on the management interfaces → extra networks to discover
             String ifaces = run(ssh, "esxcli network ip interface ipv4 get 2>/dev/null || true");
             Matcher m2 = Pattern.compile("\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+").matcher(ifaces);
             while (m2.find()) host.managementNets.add(m2.group(1));

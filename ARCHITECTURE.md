@@ -102,14 +102,42 @@ multiple strategies enrich the same device:
 
 1. **OUI vendor** — `VirtualizationDetector.vendorByOuiPrefix` maps the MAC prefix.
 2. **Virtualization-host hint** — well-known ports (902, 8006, 16509, 9440).
-3. **SNMP** (`SnmpScanner.query`, tried community by community until one works)
-   — sets `sysName`/`sysDescr`, infers `ROUTER`/`SWITCH`, queues new segments
-   from the routing table, and harvests the ARP table into peer devices.
-4. **Virtualization fingerprint** — `VirtualizationDetector.guessType`; on a hit,
+3. **Reverse DNS** — `NameResolver.reverseDns` records a `ptr` name.
+4. **SNMP** (`SnmpScanner.query`, tried community by community until one works)
+   — records `sysName` as the `snmp` name, sets `sysDescr`, infers
+   `ROUTER`/`SWITCH`, queues new segments from the routing table, and harvests
+   the ARP table into peer devices.
+5. **Virtualization fingerprint** — `VirtualizationDetector.guessType`; on a hit,
    a `VirtualizationHost` is registered and the device marked accordingly.
-5. **VM detection** — known VM MAC ranges mark the device `VIRTUAL_MACHINE`.
-6. **OS guess** — `OsFingerprint.guess` derives `osGuess` from `sysDescr`, open
+6. **VM detection** — known VM MAC ranges mark the device `VIRTUAL_MACHINE`.
+7. **OS guess** — `OsFingerprint.guess` derives `osGuess` from `sysDescr`, open
    ports, hostname and vendor.
+8. **TLS name** — if no `ptr`/`snmp` name was found and an HTTPS port is open,
+   the certificate CN/SAN becomes the `tls` name.
+
+## 4.1 Host name resolution
+
+`NameResolver` is the single place that decides a device's `hostname`. Every
+resolver records what it found through `NameResolver.record(device, source, name)`,
+which:
+
+- normalizes the name (trim, collapse whitespace, drop trailing dot, reject IP
+  literals and 253+ character strings),
+- stores it in `hostnamesBySource[source]`,
+- adds it to `aliases`,
+- sets `fqdn` on the first name containing a dot,
+- calls `pickBest`, which picks the name with the lowest priority number and
+  writes it to `hostname`.
+
+Priority (lower wins): `ptr` (10) → `snmp` (20) → `tls` (30) → `netbios` (40) →
+`mdns` (50) → `ssdp` (60). Because `pickBest` re-runs on every record, a late
+low-priority source (e.g. SSDP) can never overwrite a better name (e.g. PTR).
+Keeping the full map means the report stays auditable: you can always tell why a
+device ended up with a given name.
+
+`reverseDns` tries the JVM resolver first (which honours `/etc/hosts` and the
+system DNS), then falls back to a direct dnsjava `PTR` lookup — optionally against
+an explicit server supplied with `--dns-server`.
 
 ## 5. OS fingerprinting
 
@@ -204,6 +232,8 @@ live:
 - `VirtualizationDetectorTests` — OUI resolution (including dash/uppercase MACs),
   port fingerprints, VM MAC ranges.
 - `OsFingerprintTests` — sysDescr/port/vendor selection and priority ordering.
+- `NameResolverTests` — source precedence, aliases accumulation, name
+  normalization (trailing dot, IP rejection, whitespace), SSDP header parsing.
 - `ReportJsonRoundTripTests` — `InetAddress` ser/deser and failure behavior.
 - `JanusApplicationTests` — Spring context loads.
 

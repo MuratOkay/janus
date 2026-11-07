@@ -47,9 +47,9 @@ async function loadReport() {
         render();
         updateStats();
     } catch (error) {
-        errorBox.textContent = `Rapor yüklenemedi: ${error.message}`;
+        errorBox.textContent = `Report failed to load: ${error.message}`;
         errorBox.hidden = false;
-        document.getElementById("stats").textContent = "Rapor yüklenemedi";
+        document.getElementById("stats").textContent = "Report failed to load";
     }
 }
 
@@ -247,12 +247,12 @@ function showDetails(node) {
     document.getElementById("details").hidden = false;
     document.getElementById("title").textContent = node.label || node.id;
     const rows = [
-        ["Tip", node.type], ["IP", node.ip], ["MAC", node.mac],
-        ["Hostname", node.hostname], ["Hipervizör", node.vhostType],
-        ["Sürüm", node.version], ["Sahip", node.ownerHostId],
-        ["Kaynak", node.discoveredBy?.join(", ")],
-        ["Yönetim ağları", node.managementNets?.join(", ")],
-        ["NIC'ler", node.nics?.join(", ")]
+        ["Type", node.type], ["IP", node.ip], ["MAC", node.mac],
+        ["Hostname", node.hostname], ["Hypervisor", node.vhostType],
+        ["Version", node.version], ["Owner", node.ownerHostId],
+        ["Source", node.discoveredBy?.join(", ")],
+        ["Management networks", node.managementNets?.join(", ")],
+        ["NICs", node.nics?.join(", ")]
     ];
     for (const [key, value] of Object.entries(node.metadata || {})) rows.push([key, value]);
     const table = document.createElement("table");
@@ -272,7 +272,7 @@ function updateLegend() {
     const categories = currentColor === "type"
         ? [...new Set(nodes.map(node => node.type))].sort()
         : currentColor === "source"
-            ? ["SNMP", "LLDP/CDP", "ARP", "TCP/ICMP", "mDNS/SSDP", "Diğer"]
+            ? ["SNMP", "LLDP/CDP", "ARP", "TCP/ICMP", "mDNS/SSDP", "Other"]
             : [...new Set(nodes.map(getVlan).filter(value => value != null))].sort((a, b) => a - b).map(vlan => `VLAN ${vlan}`);
     for (const category of categories) {
         const item = document.createElement("div");
@@ -298,8 +298,8 @@ function sourceNames(category) {
 function updateStats() {
     const seconds = Math.max(0, report.finishedAt - report.startedAt) / 1000;
     document.getElementById("stats").textContent =
-        `${report.devices?.length || 0} cihaz · ${report.vhosts?.length || 0} host · `
-        + `${report.vms?.length || 0} VM · ${report.links?.length || 0} L2 bağlantısı · ${seconds.toFixed(1)} sn`;
+        `${report.devices?.length || 0} devices · ${report.vhosts?.length || 0} hosts · `
+        + `${report.vms?.length || 0} VMs · ${report.links?.length || 0} L2 links · ${seconds.toFixed(1)} s`;
 }
 
 document.getElementById("refresh").onclick = loadReport;
@@ -311,7 +311,7 @@ svg.on("click", () => { document.getElementById("details").hidden = true; });
 window.addEventListener("resize", () => simulation?.alpha(0.2).restart());
 
 if (!hasD3) {
-    errorBox.textContent = "D3 yüklenemedi; ağ bağlantısını kontrol edin.";
+    errorBox.textContent = "Failed to load D3; check the network connection.";
     errorBox.hidden = false;
 } else {
     loadReport();

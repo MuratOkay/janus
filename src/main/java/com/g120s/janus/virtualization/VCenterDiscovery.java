@@ -2,10 +2,10 @@ package com.g120s.janus.virtualization;
 
 import com.vmware.vim25.*;
 import com.vmware.vim25.mo.*;
-import com.g120s.janus.model.VirtualMachine;
 import com.g120s.janus.model.VirtualizationHost;
 
 import java.net.InetAddress;
+import java.net.URI;
 import java.net.URL;
 import java.util.*;
 
@@ -18,12 +18,13 @@ public final class VCenterDiscovery {
             throws Exception {
         List<VirtualizationHost> result = new ArrayList<>();
         String url = normalizeUrl(opt.url());
-        String vcHost = new URL(url).getHost();
+        URL sdkUrl = URI.create(url).toURL();
+        String vcHost = sdkUrl.getHost();
 
         ServiceInstance si = new ServiceInstance(
-                new URL(url), opt.user(), opt.pass(), opt.ignoreCert());
+                sdkUrl, opt.user(), opt.pass(), opt.ignoreCert());
         try {
-            // ---- vCenter (veya standalone ESXi) kendisi
+            // ---- vCenter (or standalone ESXi) itself
             AboutInfo about = si.getAboutInfo();
             VirtualizationHost vc = new VirtualizationHost();
             vc.type = "vcenter";
@@ -40,7 +41,7 @@ public final class VCenterDiscovery {
             Folder root = si.getRootFolder();
             InventoryNavigator nav = new InventoryNavigator(root);
 
-            // ---- Distributed vSwitch portgroup adlarını çöz (dvpg key → name)
+            // ---- Resolve Distributed vSwitch portgroup names (dvpg key → name)
             Map<String, String> dvPgNames = new HashMap<>();
             for (ManagedEntity me : safeArray(nav.searchManagedEntities("DistributedVirtualPortgroup")))
                 if (me instanceof DistributedVirtualPortgroup pg)
@@ -91,7 +92,7 @@ public final class VCenterDiscovery {
         vh.name = hs.getName();
         vh.metadata.put("vcenter", vc.ip);
 
-        // Ürün sürümü
+        // Product version
         try {
             if (hs.getConfig() != null && hs.getConfig().getProduct() != null) {
                 AboutInfo pi = hs.getConfig().getProduct();
@@ -103,7 +104,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // Runtime durumu
+        // Runtime state
         try {
             if (hs.getRuntime() != null) {
                 if (hs.getRuntime().getConnectionState() != null)
@@ -113,7 +114,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // Parent zinciri: Cluster / ComputeResource / Datacenter
+        // Parent chain: Cluster / ComputeResource / Datacenter
         try {
             ManagedEntity cur = hs;
             while (cur != null && cur.getParent() != null) {
@@ -138,7 +139,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // VMkernel & console vmk'ler + vSwitch/portgroup listesi
+        // VMkernel & console vmks + vSwitch/portgroup list
         try {
             HostNetworkInfo ni = hs.getConfig().getNetwork();
             if (ni != null) {
@@ -177,7 +178,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // Birincil yönetim IP'si (vmk0 varsayımı, yoksa ilk vmk, yoksa DNS)
+        // Primary management IP (assume vmk0, else the first vmk, else DNS)
         String primaryIp = null;
         String vmk0 = vh.metadata.get("vmk0");
         if (vmk0 != null && vmk0.contains("=")) primaryIp = vmk0.split("=")[1].split("/")[0];
@@ -190,7 +191,7 @@ public final class VCenterDiscovery {
         vh.ip = primaryIp != null ? primaryIp : hs.getName();
         vh.id = "esxi:" + vh.ip;
 
-        // Datastore'lar (isim:free/capacity GB)
+        // Datastores (name:free/capacity GB)
         try {
             Datastore[] datastores = hs.getDatastores();
             if (datastores != null) {
@@ -205,7 +206,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // Host'a bağlı mantıksal ağlar
+        // Logical networks attached to the host
         try {
             Network[] networks = hs.getNetworks();
             if (networks != null) {
@@ -239,7 +240,7 @@ public final class VCenterDiscovery {
                 vm.powerState = vmo.getRuntime().getPowerState().toString();
         } catch (Exception ignored) {}
 
-        // Guest IP (vmtools çalışıyorsa)
+        // Guest IP (if vmtools is running)
         try {
             if (vmo.getGuest() != null) {
                 vm.ip = vmo.getGuest().getIpAddress();
@@ -254,7 +255,7 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
-        // Sanal ethernet kartları
+        // Virtual ethernet cards
         try {
             if (vmo.getConfig() != null && vmo.getConfig().getHardware() != null
                     && vmo.getConfig().getHardware().getDevice() != null) {
@@ -288,14 +289,14 @@ public final class VCenterDiscovery {
         return "unknown";
     }
 
-    // ===================== yardımcılar =====================
+    // ===================== helpers =====================
     private static ManagedEntity[] safeArray(ManagedEntity[] arr) {
         return arr != null ? arr : new ManagedEntity[0];
     }
 
     private static String normalizeUrl(String url) {
         if (url == null || url.isBlank())
-            throw new IllegalArgumentException("vCenter/ESXi URL boş olamaz");
+            throw new IllegalArgumentException("vCenter/ESXi URL must not be blank");
         if (!url.startsWith("http://") && !url.startsWith("https://"))
             url = "https://" + url;
         if (!url.endsWith("/sdk")) url = url.replaceAll("/+$", "") + "/sdk";

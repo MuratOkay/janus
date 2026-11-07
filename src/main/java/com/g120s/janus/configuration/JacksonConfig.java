@@ -16,18 +16,17 @@ import tools.jackson.databind.ser.std.StdSerializer;
 import java.net.InetAddress;
 
 /**
- * Jackson yapılandırması (Spring Boot 4 / Jackson 3 — {@code tools.jackson}).
+ * Jackson configuration (Spring Boot 4 / Jackson 3 — {@code tools.jackson}).
  *
- * <p>{@link java.net.InetAddress} soyut bir tip olduğu için Jackson onu
- * doğrudan deserileştiremiyordu; {@code Device.ip} alanı rapor JSON'undan geri
- * okunurken "Cannot construct instance of java.net.InetAddress" hatası
- * veriyordu. Bu modül IP'leri düz metin (ör. {@code 192.168.1.10}) olarak
- * yazıp okur.
+ * <p>Because {@link java.net.InetAddress} is an abstract type, Jackson could not
+ * deserialize it directly; reading the {@code Device.ip} field back from the report
+ * JSON produced a "Cannot construct instance of java.net.InetAddress" error.
+ * This module writes and reads IPs as plain text (e.g. {@code 192.168.1.10}).
  */
 @Configuration
 public class JacksonConfig {
 
-    /** IP adreslerini düz metin olarak (seri/deseri) işleyen modül. */
+    /** Module that (de)serializes IP addresses as plain text. */
     public static SimpleModule inetAddressModule() {
         SimpleModule module = new SimpleModule("janus-inet");
 
@@ -47,7 +46,7 @@ public class JacksonConfig {
                     return InetAddress.getByName(text.trim());
                 } catch (Exception e) {
                     return (InetAddress) ctxt.handleWeirdStringValue(InetAddress.class, text,
-                            "Geçersiz IP adresi: %s", text);
+                            "Invalid IP address: %s", text);
                 }
             }
         });
@@ -55,13 +54,13 @@ public class JacksonConfig {
         return module;
     }
 
-    /** Spring MVC'nin kullandığı ObjectMapper'a modülü ekler. */
+    /** Adds the module to the ObjectMapper used by Spring MVC. */
     @Bean
     public JsonMapperBuilderCustomizer janusJacksonCustomizer() {
         return builder -> builder.addModule(inetAddressModule());
     }
 
-    /** CLI raporlaması için hazır (girintili) mapper. */
+    /** Ready-made (indented) mapper for CLI reporting. */
     public static JsonMapper cliMapper() {
         return JsonMapper.builder()
                 .enable(SerializationFeature.INDENT_OUTPUT)

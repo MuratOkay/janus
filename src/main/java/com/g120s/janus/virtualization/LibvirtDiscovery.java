@@ -4,7 +4,6 @@ import com.g120s.janus.model.VirtualMachine;
 import com.g120s.janus.model.VirtualizationHost;
 import org.libvirt.Connect;
 import org.libvirt.Domain;
-import org.libvirt.LibvirtException;
 import org.libvirt.Network;
 import org.w3c.dom.*;
 

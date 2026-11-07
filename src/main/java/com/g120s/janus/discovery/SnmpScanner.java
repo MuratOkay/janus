@@ -36,7 +36,7 @@ public final class SnmpScanner {
             t.setVersion(SnmpConstants.version2c);
 
             String descr = get(snmp, t, SYS_DESCR);
-            if (descr == null) return null;   // SNMP yok/erişilemez
+            if (descr == null) return null;   // no SNMP / unreachable
 
             String name = get(snmp, t, SYS_NAME);
             String loc  = get(snmp, t, SYS_LOC);

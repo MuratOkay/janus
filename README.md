@@ -6,6 +6,8 @@ virtualization hosts and their virtual machines, and produces a single JSON
 report that can be explored through a built-in web UI.
 
 - Multi-strategy host discovery: TCP probes, ICMP echo, ARP, mDNS, SSDP, NetBIOS.
+- Multi-source host name resolution: reverse DNS (PTR), SNMP `sysName`, TLS
+  certificate CN/SAN, NetBIOS, mDNS and SSDP — with per-source provenance.
 - Service and system enrichment over SNMP v2c (`sysDescr`, `sysName`, routing
   and ARP tables that feed new segments back into the crawl).
 - OS fingerprinting from SNMP banners, open ports, hostnames and MAC OUI data.
@@ -54,7 +56,9 @@ java -jar target/janus-0.0.1-SNAPSHOT.jar --web --server.port=8080
 | --- | --- |
 | `--cidr CIDR` | Seed network, repeatable. Defaults to the host's local networks. |
 | `--snmp COMMUNITY` | SNMP v2c community, repeatable (default `public`). |
-| `--no-tcp` `--no-icmp` `--no-arp` `--no-mdns` `--no-ssdp` `--no-netbios` `--no-snmp` `--no-lldp` | Disable individual strategies. |
+| `--no-tcp` `--no-icmp` `--no-arp` `--no-mdns` `--no-ssdp` `--no-netbios` `--no-snmp` `--no-lldp` `--no-dns` `--no-tls-names` | Disable individual strategies. |
+| `--dns-server IP` | DNS server for PTR lookups (default: system resolver). |
+| `--dns-timeout MS` | Reverse-DNS and TLS-name lookup timeout. |
 | `--threads N` | Worker pool size (default 64). |
 | `--tcp-timeout MS` / `--snmp-timeout MS` | Per-probe timeouts. |
 | `--max-subnets N` / `--max-depth N` | Crawl limits. |
@@ -76,8 +80,9 @@ See [USER_GUIDE.md](USER_GUIDE.md) for full, worked examples and
 `DiscoveryResult` serializes to JSON with these top-level fields:
 
 - `segments` — discovered network segments with their discovery source.
-- `devices` — hosts with IP, MAC, hostname, vendor, kind, open ports, services,
-  `osGuess`, `virtualizationType`, and free-form `metadata`.
+- `devices` — hosts with IP, MAC, `hostname`, `aliases`, `fqdn`,
+  `hostnamesBySource` (provenance per resolver), vendor, kind, open ports,
+  services, `osGuess`, `virtualizationType`, and free-form `metadata`.
 - `vhosts` — virtualization hosts and the VM MAC ranges they manage.
 - `vms` — virtual machines, matched to a host and (when possible) an IP.
 - `links` — L2 adjacency from LLDP/CDP.

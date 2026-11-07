@@ -30,7 +30,7 @@ public class DiscoveryOrchestrator {
             }
         }
 
-        // 1) Başlangıç segmentleri
+        // 1) Seed segments
         Deque<NetworkSegment> frontier = new ArrayDeque<>();
         Set<String> visited = new HashSet<>();
         if (cfg.seedCidrs.isEmpty()) {
@@ -49,10 +49,10 @@ public class DiscoveryOrchestrator {
             r.segments.add(seg);
             generated++;
 
-            // 2a) Host keşfi (paralel stratejiler)
+            // 2a) Host discovery (parallel strategies)
             discoverHosts(seg, byIp, r);
 
-            // 2b) Bu segmentteki her aktif cihaz için servis + SNMP
+            // 2b) Services + SNMP for every active device on this segment
             for (Device d : byIp.values()) {
                 if (!sameCidr(d.ip, seg.cidr)) continue;
                 enrich(d, byIp, r, frontier, visited);
@@ -61,7 +61,7 @@ public class DiscoveryOrchestrator {
 
         r.devices.addAll(byIp.values());
 
-        // 3) Sanallaştırma API'leri (verilen kimlik bilgileriyle)
+        // 3) Virtualization APIs (using the supplied credentials)
         for (DiscoveryConfig.Credential c : cfg.vmCreds) {
             try {
                 List<VirtualizationHost> found = switch (c.kind) {
@@ -80,7 +80,7 @@ public class DiscoveryOrchestrator {
                 };
                 for (VirtualizationHost h : found) {
                     r.vhosts.add(h);
-                    // Yönetim alt ağlarını BFS'e ekle
+                    // Add the management subnets to the BFS
                     for (String net : h.managementNets) {
                         if (!net.contains("/")) continue;
                         if (!visited.contains(net)) frontier.add(new NetworkSegment(net));
@@ -90,7 +90,7 @@ public class DiscoveryOrchestrator {
                 r.warnings.add(c.kind + "@" + c.host + ": " + ex.getMessage());
             }
         }
-        // Eklenen ağları da tara
+        // Scan the newly added networks as well
         while (!frontier.isEmpty()) {
             NetworkSegment seg = frontier.poll();
             if (!visited.add(seg.cidr) || generated++ >= cfg.maxSubnets) continue;
@@ -133,7 +133,7 @@ public class DiscoveryOrchestrator {
 
         deduplicateVirtualization(r);
 
-        // 4) VM ↔ Host eşleme
+        // 4) VM ↔ Host matching
         VMHostMatcher.match(r);
 
         r.finishedAt = System.currentTimeMillis();
@@ -169,32 +169,41 @@ public class DiscoveryOrchestrator {
                 }
             }
         }
-        // --- Multicast keşif (tek sefer, tüm segment için)
+        // --- Multicast discovery (once, for the whole segment)
         if (cfg.mdns) {
             try {
-                for (InetAddress ia : MulticastScanners.mdns(2000)) {
+                MulticastScanners.MdnsResult mdns = MulticastScanners.mdnsWithNames(2000);
+                for (InetAddress ia : mdns.addresses()) {
                     Device d = byIp.computeIfAbsent(ia.getHostAddress(), k -> new Device());
                     d.ip = ia;
                     d.discoveredBy.add("mdns");
                     d.services.add("mdns");
                 }
+                // Record the host names coming from mDNS
+                mdns.names().forEach((ia, name) -> {
+                    Device d = byIp.get(ia.getHostAddress());
+                    if (d != null) NameResolver.record(d, "mdns", name);
+                });
             } catch (Exception e) {
                 r.warnings.add("mdns: " + e.getMessage());
             }
         }
         if (cfg.ssdp) {
             try {
-                for (InetAddress ia : MulticastScanners.ssdp(2000)) {
+                for (var entry : MulticastScanners.ssdpWithHeaders(2000).entrySet()) {
+                    InetAddress ia = entry.getKey();
                     Device d = byIp.computeIfAbsent(ia.getHostAddress(), k -> new Device());
                     d.ip = ia;
                     d.discoveredBy.add("ssdp");
                     d.services.add("upnp");
+                    String name = NameResolver.fromSsdpHeaders(entry.getValue());
+                    if (name != null) NameResolver.record(d, "ssdp", name);
                 }
             } catch (Exception e) {
                 r.warnings.add("ssdp: " + e.getMessage());
             }
         }
-        // --- ARP (yerel segment ise)
+        // --- ARP (only for the local segment)
         if (cfg.arp) {
             try {
                 for (String ifName : localIfaces()) {
@@ -211,20 +220,21 @@ public class DiscoveryOrchestrator {
                 r.warnings.add("arp@" + seg.cidr + ": " + e.getMessage());
             }
         }
-        // --- NetBIOS (her aktif IP için hızlı)
+        // --- NetBIOS (quick, for every active IP)
         if (cfg.netbios) {
             for (Device d : byIp.values()) {
                 if (d.ip == null || d.discoveredBy.contains("netbios")) continue;
                 if (!sameCidr(d.ip, seg.cidr)) continue;
-                MulticastScanners.netbios(d.ip, 250).forEach((ia, name) -> {
-                    d.hostname = name;
+                String name = MulticastScanners.netbiosName(d.ip, 250);
+                if (name != null) {
                     d.discoveredBy.add("netbios");
-                });
+                    NameResolver.record(d, "netbios", name);
+                }
             }
         }
     }
 
-    /** SNMP ile sistem bilgisi + ek ağlar (route/ARP). */
+    /** System information + extra networks (route/ARP) through SNMP. */
     private void enrich(Device d, Map<String, Device> byIp, DiscoveryResult r,
                         Deque<NetworkSegment> frontier, Set<String> visited) {
         if (d.ip == null) return;
@@ -236,19 +246,30 @@ public class DiscoveryOrchestrator {
                  d.openPorts.contains(16509) || d.openPorts.contains(9440)
                  ? Device.Kind.VIRTUALIZATION_HOST : d.kind;
 
+        // Name resolution: start with reverse DNS, the most fundamental and accurate source.
+        if (cfg.dns) {
+            String ptr = NameResolver.reverseDns(d.ip, cfg.dnsServer, cfg.dnsTimeoutMs);
+            if (ptr != null) {
+                NameResolver.record(d, "ptr", ptr);
+                d.discoveredBy.add("dns");
+            }
+        }
+
         if (cfg.snmp) {
             for (String comm : cfg.snmpCommunities) {
                 try {
                     SnmpScanner.SnmpResult s = SnmpScanner.query(d.ip.getHostAddress(), comm, cfg.snmpTimeoutMs);
                     if (s == null) continue;
-                    d.hostname = s.sysName();
+                    if (s.sysName() != null && !s.sysName().isBlank()) {
+                        NameResolver.record(d, "snmp", s.sysName());
+                    }
                     d.metadata.put("sysDescr", s.sysDescr());
                     d.discoveredBy.add("snmp");
                     String desc = s.sysDescr() == null ? "" : s.sysDescr().toLowerCase();
                     if (desc.contains("router") || desc.contains("ios") || desc.contains("junos"))
                         d.kind = Device.Kind.ROUTER;
                     else if (desc.contains("switch")) d.kind = Device.Kind.SWITCH;
-                    // Ek ağlar: routing table'da default olmayanlar
+                    // Extra networks: the non-default entries in the routing table
                     for (String dst : s.routes().keySet()) {
                         String cidr = toCidr(dst);
                         if (cidr != null && !cidr.startsWith("0.0.0.0")
@@ -258,20 +279,20 @@ public class DiscoveryOrchestrator {
                             if (visited.size() < cfg.maxSubnets) frontier.add(ns);
                         }
                     }
-                    // ARP tablosundan MAC toplama
+                    // Collect MACs from the ARP table
                     for (var e : s.arpTable().entrySet()) {
                         Device tgt = findOrCreate(byIp, e.getKey());
                         if (tgt.mac == null) tgt.mac = e.getValue();
                         tgt.discoveredBy.add("snmp-arp");
                     }
-                    break; // başarılı community
+                    break; // successful community
                 } catch (Exception ex) {
                     r.warnings.add("snmp@" + d.ip.getHostAddress() + ": " + ex.getMessage());
                 }
             }
         }
 
-        // Sanallaştırma tespiti
+        // Virtualization detection
         String vt = VirtualizationDetector.guessType(d);
         if (vt != null) {
             d.virtualizationType = vt;
@@ -285,13 +306,26 @@ public class DiscoveryOrchestrator {
         String vmv = VirtualizationDetector.vmVendorByMac(d.mac);
         if (vmv != null) d.kind = Device.Kind.VIRTUAL_MACHINE;
 
-        // İşletim sistemi tahmini (SNMP sysDescr + portlar + hostname + OUI)
+        // Operating system guess (SNMP sysDescr + ports + hostname + OUI)
         if (d.osGuess == null) {
             d.osGuess = OsFingerprint.guess(d);
         }
+
+        // Name from the TLS certificate (only if the name is still weak and HTTPS is open)
+        if (cfg.tlsNames && !d.hostnamesBySource.containsKey("ptr")
+                && !d.hostnamesBySource.containsKey("snmp")) {
+            for (int port : new int[]{443, 8443, 9440}) {
+                if (!d.openPorts.contains(port)) continue;
+                String tlsName = NameResolver.fromTlsCertificate(d.ip, port, cfg.dnsTimeoutMs);
+                if (tlsName != null) {
+                    NameResolver.record(d, "tls", tlsName);
+                    break;
+                }
+            }
+        }
     }
 
-    // -- yardımcılar ---------------------------------------------------------
+    // -- helpers ---------------------------------------------------------
 
     private static Device findOrCreate(Map<String, Device> byIp, String ip) {
         return byIp.computeIfAbsent(ip, key -> {
@@ -365,7 +399,7 @@ public class DiscoveryOrchestrator {
         List<InetAddress> out = new ArrayList<>();
         String[] p = cidr.split("/");
         int prefix = Integer.parseInt(p[1]);
-        if (prefix < 22) throw new IllegalArgumentException("Çok büyük ağ: " + cidr);
+        if (prefix < 22) throw new IllegalArgumentException("Network too large: " + cidr);
         InetAddress net = InetAddress.getByName(p[0]);
         long base = Integer.toUnsignedLong(toInt(net));
         int size = 1 << (32 - prefix);

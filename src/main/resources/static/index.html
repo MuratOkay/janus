@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,25 +9,25 @@
 <body>
 <header>
     <h1>Janus <small>Network Discovery</small></h1>
-    <label>Rapor <select id="reports" aria-label="Rapor seç"></select></label>
-    <input id="search" type="search" placeholder="IP / hostname / MAC ara" autocomplete="off">
-    <select id="layout" aria-label="Yerleşim">
-        <option value="force">Fiziksel topoloji</option>
-        <option value="vlan">VLAN grupları</option>
-        <option value="virt">Sanallaştırma</option>
+    <label>Report <select id="reports" aria-label="Select report"></select></label>
+    <input id="search" type="search" placeholder="Search IP / hostname / MAC" autocomplete="off">
+    <select id="layout" aria-label="Layout">
+        <option value="force">Physical topology</option>
+        <option value="vlan">VLAN groups</option>
+        <option value="virt">Virtualization</option>
     </select>
-    <select id="color" aria-label="Renk">
-        <option value="type">Cihaz tipi</option>
-        <option value="source">Keşif yöntemi</option>
+    <select id="color" aria-label="Color">
+        <option value="type">Device type</option>
+        <option value="source">Discovery method</option>
         <option value="vlan">VLAN</option>
     </select>
-    <button id="refresh">Yenile</button>
-    <span id="stats">Rapor yükleniyor...</span>
+    <button id="refresh">Refresh</button>
+    <span id="stats">Loading report...</span>
 </header>
 <main>
-    <svg id="graph" role="img" aria-label="Ağ topoloji grafiği"></svg>
+    <svg id="graph" role="img" aria-label="Network topology graph"></svg>
     <aside id="details" hidden>
-        <button id="close" aria-label="Kapat">×</button>
+        <button id="close" aria-label="Close">×</button>
         <h2 id="title"></h2>
         <div id="content"></div>
     </aside>

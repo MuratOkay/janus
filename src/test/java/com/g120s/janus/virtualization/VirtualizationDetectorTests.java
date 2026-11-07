@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Fingerprint tespiti MAC OUI'ye dayanıyor. {@code vendorOUI} bir dönem
- * sabit {@code ""} döndürdüğü için Xen/Hyper-V hiç tespit edilemiyordu.
+ * Fingerprint detection is based on the MAC OUI. {@code vendorOUI} used to return a
+ * constant {@code ""}, so Xen/Hyper-V could never be detected.
  */
 class VirtualizationDetectorTests {
 
@@ -20,14 +20,14 @@ class VirtualizationDetectorTests {
         assertEquals("xen", VirtualizationDetector.vendorOUI(xen));
 
         Device ms = device("00:15:5D:aa:bb:cc");
-        assertEquals("microsoft", VirtualizationDetector.vendorOUI(ms), "büyük harf MAC de çalışmalı");
+        assertEquals("microsoft", VirtualizationDetector.vendorOUI(ms), "an uppercase MAC must work too");
     }
 
     @Test
     void unknownOuiYieldsEmptyString() {
         assertEquals("", VirtualizationDetector.vendorOUI(device("de:ad:be:ef:00:01")));
         assertEquals("", VirtualizationDetector.vendorOUI(device(null)));
-        assertEquals("", VirtualizationDetector.vendorOUI(device("kisa")));
+        assertEquals("", VirtualizationDetector.vendorOUI(device("short")));
     }
 
     @Test
@@ -35,7 +35,7 @@ class VirtualizationDetectorTests {
         Device workstation = device("00:1b:21:aa:bb:cc");   // Intel NIC
         workstation.openPorts.add(5985);
         assertNull(VirtualizationDetector.guessType(workstation),
-                "WinRM açık iş istasyonu Hyper-V host sayılmamalı");
+                "a workstation with WinRM open must not be counted as a Hyper-V host");
 
         Device server = device("00:15:5d:aa:bb:cc");        // Hyper-V OUI
         server.openPorts.add(5985);

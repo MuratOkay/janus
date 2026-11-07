@@ -31,13 +31,13 @@ public class ReportService {
         Path selected = resolveReport(name);
         if (!Files.isRegularFile(selected)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "Rapor bulunamadı: " + selected.toAbsolutePath());
+                    "Report not found: " + selected.toAbsolutePath());
         }
         try {
             return mapper.readValue(selected.toFile(), DiscoveryResult.class);
         } catch (tools.jackson.core.JacksonException e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Rapor okunamadı: " + selected.toAbsolutePath(), e);
+                    "Report could not be read: " + selected.toAbsolutePath(), e);
         }
     }
 
@@ -50,13 +50,13 @@ public class ReportService {
         Path requested = Paths.get(name);
         if (requested.isAbsolute() || requested.getNameCount() != 1
                 || !requested.getFileName().toString().endsWith(".json")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Geçersiz rapor adı");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid report name");
         }
         for (Path directory : List.of(reportDirectory, Paths.get("."))) {
             Path candidate = directory.resolve(requested).normalize();
             if (Files.isRegularFile(candidate)) return candidate;
         }
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Rapor bulunamadı: " + name);
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Report not found: " + name);
     }
 
     public List<String> listReports() {
@@ -74,7 +74,7 @@ public class ReportService {
                     .filter(name -> name.endsWith(".json"))
                     .forEach(names::add);
         } catch (IOException e) {
-            throw new UncheckedIOException("Rapor dizini okunamadı: " + directory.toAbsolutePath(), e);
+            throw new UncheckedIOException("Report directory could not be read: " + directory.toAbsolutePath(), e);
         }
     }
 }

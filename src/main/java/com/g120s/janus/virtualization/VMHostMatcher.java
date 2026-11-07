@@ -8,9 +8,9 @@ import java.util.*;
 public final class VMHostMatcher {
 
     /**
-     * İki katman:
-     * 1) Kesin: sanallaştırma API'si VM'in MAC'ini host'a bağladıysa (vhost.vmMacs).
-     * 2) Sezgisel: MAC OUI + aynı L2 segmentte olma + isim deseni.
+     * Two layers:
+     * 1) Exact: the virtualization API linked the VM's MAC to a host (vhost.vmMacs).
+     * 2) Heuristic: MAC OUI + being on the same L2 segment + name pattern.
      */
     public static void match(DiscoveryResult r) {
         Map<String, String> macToHost = new HashMap<>();
@@ -28,7 +28,7 @@ public final class VMHostMatcher {
                 d.metadata.put("match", "api-mac");
             } else if (vmType != null) {
                 d.metadata.put("vmVendor", vmType);
-                // Heuristic: aynı /24'te eşleşen vm vendor hostu
+                // Heuristic: a VM vendor host matching in the same /24
                 for (VirtualizationHost h : r.vhosts) {
                     if (sameL2(h, d)) {
                         d.ownerHostId = h.id;
@@ -39,7 +39,7 @@ public final class VMHostMatcher {
             }
         }
 
-        // VM IP zenginleştirme: MAC ile eşleşen cihazdan VM'e IP ata
+        // VM IP enrichment: assign an IP to the VM from the device matching its MAC
         Map<String, Device> devicesByMac = new HashMap<>();
         for (Device device : r.devices) {
             String devMac = normalizeMac(device.mac);
@@ -55,7 +55,6 @@ public final class VMHostMatcher {
 
     private static boolean sameL2(VirtualizationHost h, Device d) {
         if (h.managementNets.isEmpty() || d.ip == null) return false;
-        String dip = d.ip.getHostAddress();
         for (String net : h.managementNets) {
             try {
                 String[] parts = net.split("/");

@@ -71,7 +71,7 @@ class OsFingerprintTests {
     @Test
     void sysDescrBeatsPorts() {
         Device d = dev();
-        d.openPorts.add(3389); // Windows port imzası
+        d.openPorts.add(3389); // Windows port signature
         d.metadata.put("sysDescr", "Linux server");
         assertEquals(OsFingerprint.LINUX, OsFingerprint.guess(d));
     }

@@ -6,23 +6,23 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Elde edilen zayıf sinyalleri (SNMP sysDescr, açık portlar, hostname, OUI
- * üreticisi) birleştirerek bir işletim sistemi tahmini üretir.
+ * Combines the weak signals collected (SNMP sysDescr, open ports, hostname, OUI
+ * vendor) into an operating system guess.
  *
- * <p>Amaç kesin tespit değil, en olası sınıflandırmadır. Sinyaller
- * güvenilirlik sırasına göre değerlendirilir:
+ * <p>The goal is not exact detection but the most likely classification. Signals
+ * are evaluated in order of reliability:
  * <ol>
- *   <li>SNMP sysDescr metni (en güçlü sinyal)</li>
- *   <li>Belirgin port parmak izleri (RDP, SSH, SMB/RPC, AFP, IPP...)</li>
- *   <li>Üretici/OUI (Apple → macOS, Microsoft → Windows...)</li>
- *   <li>Hostname kalıpları</li>
+ *   <li>SNMP sysDescr text (the strongest signal)</li>
+ *   <li>Distinctive port fingerprints (RDP, SSH, SMB/RPC, AFP, IPP...)</li>
+ *   <li>Vendor/OUI (Apple → macOS, Microsoft → Windows...)</li>
+ *   <li>Hostname patterns</li>
  * </ol>
  */
 public final class OsFingerprint {
 
     private OsFingerprint() {}
 
-    /** Bilinen OS sınıfları (küçük harf, kararlı kimlikler). */
+    /** Known OS classes (lowercase, stable identifiers). */
     public static final String WINDOWS = "windows";
     public static final String LINUX   = "linux";
     public static final String MACOS   = "macos";
@@ -34,7 +34,7 @@ public final class OsFingerprint {
     public static final String PRINTER = "printer-firmware";
 
     /**
-     * Cihaz için OS tahmini döndürür; hiçbir sinyal yoksa {@code null}.
+     * Returns an OS guess for the device; {@code null} if there is no signal at all.
      */
     public static String guess(Device d) {
         if (d == null) return null;
@@ -51,17 +51,17 @@ public final class OsFingerprint {
         return null;
     }
 
-    /** SNMP sysDescr metninden OS çıkarımı. */
+    /** OS inference from the SNMP sysDescr text. */
     static String fromSysDescr(String sysDescr) {
         if (sysDescr == null || sysDescr.isBlank()) return null;
         String s = sysDescr.toLowerCase(Locale.ROOT);
 
-        // Ağ işletim sistemleri (IOS/JunOS, Linux'tan önce kontrol edilmeli)
+        // Network operating systems (IOS/JunOS must be checked before Linux)
         if (s.contains("cisco ios") || s.contains("ios software")
                 || s.contains("ios xe") || s.contains("ios-xe")) return IOS;
         if (s.contains("junos")) return JUNOS;
 
-        // Windows ailesi
+        // Windows family
         if (s.contains("windows nt") || s.contains("windows server")
                 || s.contains("windows 10") || s.contains("windows 11")
                 || s.contains("microsoft windows")) return WINDOWS;
@@ -76,18 +76,18 @@ public final class OsFingerprint {
         if (s.contains("freebsd") || s.contains("pfsense") || s.contains("opnsense"))
             return FREEBSD;
 
-        // Linux dağıtımları (genel)
+        // Linux distributions (generic)
         if (s.contains("linux")) return LINUX;
 
         return null;
     }
 
-    /** OUI üreticisi + açık portlara göre çıkarım. */
+    /** Inference from the OUI vendor + open ports. */
     static String fromVendorAndPorts(Device d) {
         Set<Integer> p = d.openPorts;
         String vendor = d.vendor == null ? "" : d.vendor.toLowerCase(Locale.ROOT);
 
-        // Yazıcı: IPP / RAW / LPD + yazıcı OUI'leri
+        // Printer: IPP / RAW / LPD + printer OUIs
         if (p.contains(9100) || p.contains(515)
                 || (p.contains(631) && p.contains(80))) {
             if (vendor.contains("hp") || vendor.contains("canon")
@@ -95,13 +95,13 @@ public final class OsFingerprint {
                     || p.contains(9100)) return PRINTER;
         }
 
-        // Apple donanımı → macOS (sunucu portları) veya iOS (mobil)
+        // Apple hardware → macOS (server ports) or iOS (mobile)
         if (vendor.contains("apple")) {
             if (p.contains(548) || p.contains(22) || p.contains(88)) return MACOS;
-            return null; // iOS/mobil ayrımını port ile yapamayız
+            return null; // we cannot distinguish iOS/mobile by port
         }
 
-        // Windows'a özgü kombinasyonlar
+        // Windows-specific combinations
         if (p.contains(3389)) return WINDOWS;
         if (p.contains(5985) || p.contains(5986)) {
             if (vendor.contains("microsoft") || p.contains(445) || p.contains(135))
@@ -109,16 +109,16 @@ public final class OsFingerprint {
         }
         if (p.contains(445) && p.contains(135)) return WINDOWS;
 
-        // VMware ESXi port imzası
+        // VMware ESXi port signature
         if (p.contains(902) && p.contains(443)) return ESXI;
 
-        // SSH açık Unix-benzeri (Windows vendor değilse)
+        // SSH open on a Unix-like host (unless the vendor is Windows)
         if (p.contains(22) && !vendor.contains("microsoft")) return LINUX;
 
         return null;
     }
 
-    /** Hostname kalıplarından kaba çıkarım. */
+    /** Coarse inference from hostname patterns. */
     static String fromHostname(String hostname) {
         if (hostname == null || hostname.isBlank()) return null;
         String h = hostname.toLowerCase(Locale.ROOT);

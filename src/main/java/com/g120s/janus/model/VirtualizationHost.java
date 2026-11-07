@@ -6,7 +6,7 @@ public class VirtualizationHost {
     public String id;             // uuid / mac / ip
     public String type;           // esxi, vcenter, proxmox, kvm, hyperv, xen, nutanix
     public String ip, name, version, source;
-    public Set<String> vmMacs = new TreeSet<>();   // yönetilen VM'lerin MAC'leri
-    public Set<String> managementNets = new TreeSet<>();  // host VMkernel/bridge subnetleri
+    public Set<String> vmMacs = new TreeSet<>();   // MACs of the managed VMs
+    public Set<String> managementNets = new TreeSet<>();  // host VMkernel/bridge subnets
     public Map<String, String> metadata = new HashMap<>();
 }

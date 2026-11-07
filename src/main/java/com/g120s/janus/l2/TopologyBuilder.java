@@ -79,7 +79,7 @@ public final class TopologyBuilder {
                     result.devices.add(discovered);
                     byIp.put(address, discovered);
                 } catch (Exception e) {
-                    result.warnings.add("Geçersiz LLDP/CDP yönetim IP'si '" + address + "': " + e.getMessage());
+                    result.warnings.add("Invalid LLDP/CDP management IP '" + address + "': " + e.getMessage());
                 }
             }
 

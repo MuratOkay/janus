@@ -64,7 +64,7 @@ What happens:
 The console prints a one-line summary:
 
 ```
-Bitti. 42 cihaz, 7 sanal makine, 2 host, 3 ağ segmenti, 5 L2 bağlantısı.
+Done. 42 devices, 7 virtual machines, 2 hosts, 3 network segments, 5 L2 links.
 ```
 
 ## 3. Choosing discovery strategies
@@ -74,7 +74,7 @@ All strategies are on by default. Turn off the ones you do not want:
 ```bash
 # Fast, quiet, port-based only:
 java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
-  --no-icmp --no-arp --no-mdns --no-ssdp --no-netbios --no-lldp --no-snmp
+  --no-icmp --no-arp --no-mdns --no-ssdp --no-netbios --no-lldp --no-snmp --no-dns
 
 # Passive-ish: reuse the SNMP routing table to discover neighbors:
 java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 --snmp public --no-tcp
@@ -86,6 +86,61 @@ Notes:
   virtualization detection) lose most of their signal.
 - ARP only runs on segments that exactly match a local interface, because ARP
   does not cross routers.
+
+## 3.1 Host name resolution
+
+Janus resolves each host's name from several independent sources and keeps track
+of which source produced which name. If you see devices without a `hostname`,
+this is the section to read.
+
+Sources, in precedence order (first non-empty wins for `hostname`):
+
+| Source key | How it works | Requirements |
+| --- | --- | --- |
+| `ptr` | Reverse DNS (PTR) lookup | Reachable DNS server |
+| `snmp` | SNMP `sysName` (1.3.6.1.2.1.1.5.0) | SNMP enabled + community |
+| `tls` | HTTPS certificate CN or SAN | TLS on 443/8443/9440 |
+| `netbios` | NetBIOS Node Status (UDP/137) | Windows hosts |
+| `mdns` | mDNS `.local` host records | Multicast DNS enabled |
+| `ssdp` | UPnP `friendlyName` / `SERVER` header | UPnP devices |
+
+Point it at a specific DNS server (useful when the system resolver is not the
+same as the network's DNS), and give lookups a budget:
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --dns-server 10.0.0.53 --dns-timeout 1500
+```
+
+Disable the name lookups you do not want:
+
+```bash
+# No reverse DNS and no TLS certificate probing:
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --no-dns --no-tls-names
+```
+
+Each device in the report records **every** name it found and where it came from,
+so you can audit a suspicious or generic result:
+
+```json
+"hostname": "web01.corp.example.com",
+"fqdn": "web01.corp.example.com",
+"hostnamesBySource": {
+  "mdns": "web01",
+  "netbios": "WEB01",
+  "ptr": "web01.corp.example.com"
+},
+"aliases": ["WEB01", "web01", "web01.corp.example.com"]
+```
+
+Tips when names are missing:
+
+- Confirm reverse DNS actually works for the range: `dig -x 10.0.0.20`.
+- If DNS is fine but Janus sees nothing, check that `--no-dns` was not set and that
+  `--dns-server` points at a resolver that can see that zone.
+- Devices with no DNS and no SNMP will only ever resolve via NetBIOS/mDNS/SSDP,
+  and only if those protocols are enabled on the device.
 
 ## 4. Tuning for larger networks
 
@@ -178,6 +233,11 @@ Field reference:
 
 - **kind** — `WORKSTATION`, `SERVER`, `ROUTER`, `SWITCH`, `FIREWALL`, `PRINTER`,
   `IOT`, `MOBILE`, `STORAGE`, `VIRTUALIZATION_HOST`, `VIRTUAL_MACHINE`, `UNKNOWN`.
+- **hostname** — the best name found, chosen by source precedence (see §3.1).
+- **aliases** — every distinct name found for the host, from all sources.
+- **fqdn** — the first fully-qualified name found (contains a dot), or `null`.
+- **hostnamesBySource** — map of resolver key (`ptr`, `snmp`, `tls`, `netbios`,
+  `mdns`, `ssdp`) to the name it produced, for auditing.
 - **vendor** — resolved from the MAC OUI (e.g. `vmware`, `dell`, `cisco`).
 - **osGuess** — one of `windows`, `linux`, `macos`, `ios`, `junos`, `freebsd`,
   `esxi`, `printer-firmware`, or `null` when there is not enough signal.
@@ -221,6 +281,11 @@ Point it at a different report or directory with
   run with `sudo`.
 - **SNMP shows nothing.** Verify the community and that UDP/161 reaches the device.
   Check `warnings` in the JSON for `snmp@<ip>: ...` entries.
+- **Hostnames are missing.** Work through §3.1: confirm reverse DNS resolves the
+  range (`dig -x <ip>`), that `--no-dns` is not set, and that `--dns-server` points
+  at a resolver that can see that zone. Devices without DNS or SNMP fall back to
+  NetBIOS/mDNS/SSDP only. Inspect `hostnamesBySource` on the device to see which
+  resolvers ran.
 - **Web UI is empty.** Ensure a report file exists at the configured path and that
   `/api/health` responds; the UI loads `/api/report` on startup.
 - **Port probing is slow.** Lower `--tcp-timeout`; raise `--threads`.

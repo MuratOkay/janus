@@ -6,5 +6,5 @@ public class VirtualMachine {
     public String powerState;
     public String guestOs;
     public List<String> nics = new ArrayList<>();  // mac@network
-    public String ip;                              // eşleşince dolar
+    public String ip;                              // filled in once matched
 }

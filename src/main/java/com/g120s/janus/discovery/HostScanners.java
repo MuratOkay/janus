@@ -6,7 +6,7 @@ import java.util.concurrent.*;
 
 public final class HostScanners {
 
-    /** TCP connect probe: ICMP bloklu olsa bile port açıksa canlılık kanıtıdır. */
+    /** TCP connect probe: even when ICMP is blocked, an open port proves liveness. */
     public static boolean tcpProbe(InetAddress ip, int port, int timeoutMs) {
         try (Socket s = new Socket()) {
             s.connect(new InetSocketAddress(ip, port), timeoutMs);
@@ -14,7 +14,7 @@ public final class HostScanners {
         } catch (Exception e) { return false; }
     }
 
-    /** Birden fazla porta paralel TCP denemesi; açık portları sıralı döndürür. */
+    /** Parallel TCP attempts against several ports; returns the open ports in order. */
     public static List<Integer> tcpScan(ExecutorService pool, InetAddress ip,
                                         List<Integer> ports, int timeoutMs) throws Exception {
         List<Future<Integer>> fs = new ArrayList<>();
@@ -25,7 +25,7 @@ public final class HostScanners {
         return open;
     }
 
-    /** ICMP echo (Java sürümüne göre ICMP veya TCP yankı olabilir; TCP ile desteklenmeli). */
+    /** ICMP echo (may be ICMP or a TCP echo depending on the Java version; prefer TCP). */
     public static boolean icmp(InetAddress ip, int timeoutMs) {
         try { return ip.isReachable(timeoutMs); } catch (Exception e) { return false; }
     }
