@@ -21,6 +21,15 @@ public final class SnmpScanner {
     private static final OID ROUTE_TYPE= new OID("1.3.6.1.2.1.4.21.1.8");    // ipRouteType
     private static final OID ROUTE_MASK= new OID("1.3.6.1.2.1.4.21.1.11");   // ipRouteMask
     private static final OID ARP_MAC   = new OID("1.3.6.1.2.1.4.22.1.2");    // ipNetToMediaPhysAddress
+    // Layer-2 / VLAN tables, for locating a host on a switch port and per VLAN.
+    private static final OID IP_IFINDEX = new OID("1.3.6.1.2.1.4.20.1.2");   // ipAdEntIfIndex
+    private static final OID IF_NAME    = new OID("1.3.6.1.2.1.2.2.1.2");     // ifName
+    private static final OID IF_ALIAS   = new OID("1.3.6.1.2.1.31.1.1.1.18"); // ifAlias (operator label)
+    private static final OID BRIDGE_MAC = new OID("1.3.6.1.2.1.17.4.3.1.1");  // dot1dTpFdbAddress
+    private static final OID BRIDGE_PORT= new OID("1.3.6.1.2.1.17.4.3.1.2");  // dot1dTpFdbPort
+    private static final OID BRIDGE_IF  = new OID("1.3.6.1.2.1.17.1.4.1.2");  // dot1dBasePortIfIndex
+    private static final OID QB_FDB_PORT= new OID("1.3.6.1.2.1.17.7.1.2.2.1.2"); // dot1qTpFdbPort
+    private static final OID QB_VLAN_NAME = new OID("1.3.6.1.2.1.17.7.1.4.3.1.1"); // dot1qVlanStaticName
 
     /** ipRouteType `invalid`, per RFC 1213 — the row is not a usable route. */
     static final String ROUTE_TYPE_INVALID = "2";
@@ -31,7 +40,14 @@ public final class SnmpScanner {
                              Map<String,String> routes,
                              Map<String,String> routeMasks,
                              Map<String,String> routeTypes,
-                             Map<String,String> arpTable) {}
+                             Map<String,String> arpTable,
+                             Map<String,String> ifIndexes,
+                             Map<String,String> ifNames,
+                             Map<String,String> ifAliases,
+                             Map<String,String> bridgePorts,
+                             Map<String,String> bridgePortIfIndexes,
+                             Map<String,String> vlanBridgePorts,
+                             Map<String,String> vlanNames) {}
 
     public static SnmpResult query(String host, String community, int timeoutMs) throws Exception {
         try (TransportMapping<?> transport = new DefaultUdpTransportMapping()) {
@@ -65,9 +81,24 @@ public final class SnmpScanner {
             // recovered from the tail of the index.
             Map<String,String> arps = walkIndexed(snmp, t, ARP_MAC);
 
+            // Interface inventory: index is a plain ifIndex.
+            Map<String,String> ifIndexes  = walkIndexed(snmp, t, IP_IFINDEX);
+            Map<String,String> ifNames    = walkIndexed(snmp, t, IF_NAME);
+            Map<String,String> ifAliases  = walkIndexed(snmp, t, IF_ALIAS);
+
+            // Bridge forwarding tables: which switch port holds which MAC. The plain
+            // table is VLAN-agnostic; the Q-BRIDGE one is indexed by VLAN + MAC and is
+            // what makes per-VLAN host location possible.
+            Map<String,String> bridgePorts     = walkIndexed(snmp, t, BRIDGE_PORT);
+            Map<String,String> bridgePortIfIdx = walkIndexed(snmp, t, BRIDGE_IF);
+            Map<String,String> vlanBridgePorts = walkIndexed(snmp, t, QB_FDB_PORT);
+            Map<String,String> vlanNames       = walkIndexed(snmp, t, QB_VLAN_NAME);
+
             snmp.close();
             return new SnmpResult(descr, name, loc, List.copyOf(addrs.keySet()),
-                    ifMasks, routes, routeMasks, routeTypes, arps);
+                    ifMasks, routes, routeMasks, routeTypes, arps,
+                    ifIndexes, ifNames, ifAliases,
+                    bridgePorts, bridgePortIfIdx, vlanBridgePorts, vlanNames);
         }
     }
 
@@ -97,11 +128,99 @@ public final class SnmpScanner {
             if (r == null || r.getResponse() == null) break;
             VariableBinding vb = r.getResponse().get(0);
             if (!vb.getOid().startsWith(col) || vb.getVariable().isException()) break;
-            String key = indexToIp(col, vb.getOid());
+            String key = indexKey(col, vb.getOid());
             if (key != null) out.put(key, vb.getVariable().toString());
             cur = vb.getOid();
         }
         return out;
+    }
+
+    /** Is this column indexed by an IPv4 address? */
+    private static boolean isIpIndexed(OID column) {
+        return column.equals(IP_ADDR) || column.equals(IP_MASK) || column.equals(IP_IFINDEX)
+                || column.equals(ARP_MAC) || column.equals(ROUTE_NH)
+                || column.equals(ROUTE_TYPE) || column.equals(ROUTE_MASK);
+    }
+
+    /**
+     * Turns a row OID into the key that pairs it with the other columns of the same
+     * table. Each table family is indexed differently, and using the wrong decoder
+     * silently mislabels every row.
+     */
+    static String indexKey(OID column, OID row) {
+        int[] suffix = suffixOf(column, row);
+        if (suffix == null) return null;
+        if (isIpIndexed(column)) return ipFromSuffix(suffix);
+        // dot1qTpFdbPort is indexed by VLAN followed by the MAC.
+        if (column.equals(QB_FDB_PORT)) return vlanMacKey(suffix);
+        if (column.equals(BRIDGE_PORT) || column.equals(BRIDGE_MAC)) return macFromSuffix(suffix);
+        // ifName, ifAlias, dot1dBasePortIfIndex and dot1qVlanStaticName use a single
+        // integer index (ifIndex, bridge port and VLAN respectively).
+        return singleIntKey(suffix);
+    }
+
+    /** Sub-identifiers following the column in a row OID; {@code null} if none. */
+    static int[] suffixOf(OID column, OID row) {
+        if (column == null || row == null || row.size() <= column.size()) return null;
+        int[] suffix = new int[row.size() - column.size()];
+        for (int i = 0; i < suffix.length; i++) suffix[i] = row.get(column.size() + i);
+        return suffix;
+    }
+
+    /** A single trailing integer, such as an ifIndex or a VLAN id. */
+    static String singleIntKey(int[] suffix) {
+        if (suffix == null || suffix.length < 1) return null;
+        return String.valueOf(suffix[suffix.length - 1]);
+    }
+
+    /** Six trailing octets as a colon-separated MAC address. */
+    static String macFromSuffix(int[] suffix) {
+        if (suffix == null || suffix.length < 6) return null;
+        int offset = suffix.length - 6;
+        StringBuilder mac = new StringBuilder(17);
+        for (int i = offset; i < suffix.length; i++) {
+            int octet = suffix[i];
+            if (octet < 0 || octet > 255) return null;
+            if (mac.length() > 0) mac.append(':');
+            mac.append(String.format("%02x", octet));
+        }
+        return mac.toString();
+    }
+
+    /** {@code <vlan>:<mac>} key for the Q-BRIDGE forwarding table. */
+    static String vlanMacKey(int[] suffix) {
+        if (suffix == null || suffix.length < 7) return null;
+        String mac = macFromSuffix(suffix);
+        if (mac == null) return null;
+        return suffix[suffix.length - 7] + ":" + mac;
+    }
+
+    /** VLAN id parsed out of a {@link #vlanMacKey} value. */
+    static Integer vlanOfKey(String key) {
+        if (key == null) return null;
+        int separator = key.indexOf(':');
+        if (separator <= 0) return null;
+        try {
+            return Integer.parseInt(key.substring(0, separator));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** MAC parsed out of a {@link #vlanMacKey} value. */
+    static String macOfKey(String key) {
+        if (key == null) return null;
+        int separator = key.indexOf(':');
+        // A bare MAC also contains colons, so only strip a numeric prefix.
+        if (separator > 0) {
+            try {
+                Integer.parseInt(key.substring(0, separator));
+                return key.substring(separator + 1);
+            } catch (NumberFormatException ignored) {
+                return key;
+            }
+        }
+        return key;
     }
 
     /** Decodes the table index that follows {@code column} into a dotted address. */

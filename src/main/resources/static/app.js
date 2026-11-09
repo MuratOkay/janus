@@ -46,6 +46,7 @@ async function loadReport() {
         buildGraph();
         render();
         updateStats();
+        renderSegments();
     } catch (error) {
         errorBox.textContent = `Report failed to load: ${error.message}`;
         errorBox.hidden = false;
@@ -238,6 +239,17 @@ function vlanX(node, width) {
 
 function endpointId(endpoint) { return typeof endpoint === "object" ? endpoint.id : endpoint; }
 function shorten(value, limit) { return value?.length > limit ? `${value.slice(0, limit - 1)}…` : value || ""; }
+/**
+ * Switch port label, combining the bridge port number with the interface name the
+ * switch reports for it (e.g. "12 (Gi1/0/12)") when both are known.
+ */
+function switchPort(node) {
+    const port = node.metadata?.["l2.bridgePort"];
+    const name = node.metadata?.["l2.portName"];
+    if (port && name) return `${port} (${name})`;
+    return port || name || null;
+}
+
 function matches(node, query) {
     return !query || [node.ip, node.mac, node.hostname, node.label, node.type]
         .filter(Boolean).join(" ").toLowerCase().includes(query);
@@ -252,7 +264,9 @@ function showDetails(node) {
         ["Version", node.version], ["Owner", node.ownerHostId],
         ["Source", node.discoveredBy?.join(", ")],
         ["Management networks", node.managementNets?.join(", ")],
-        ["NICs", node.nics?.join(", ")]
+        ["NICs", node.nics?.join(", ")],
+        ["Switch", node.metadata?.["l2.switch"]],
+        ["Switch port", switchPort(node)]
     ];
     for (const [key, value] of Object.entries(node.metadata || {})) rows.push([key, value]);
     const table = document.createElement("table");
@@ -295,11 +309,109 @@ function sourceNames(category) {
     })[category] || [];
 }
 
+function cidrRange(cidr) {
+    const [address, prefixText] = String(cidr || "").split("/");
+    const prefix = Number(prefixText);
+    const octets = String(address || "").split(".").map(Number);
+    if (octets.length !== 4 || octets.some(o => !Number.isInteger(o) || o < 0 || o > 255)
+            || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+    const value = ((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3];
+    const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+    return { from: (value & mask) >>> 0, to: ((value & mask) >>> 0) + (2 ** (32 - prefix)) - 1, prefix };
+}
+
+function devicesIn(segment) {
+    const range = cidrRange(segment.cidr);
+    if (!range) return 0;
+    return (report.devices || []).filter(device => {
+        const host = cidrRange(`${device.ip}/32`);
+        return host && host.from >= range.from && host.from <= range.to;
+    }).length;
+}
+
+// Segments arrive flat. Rebuild the parent/child shape the crawl produced so the
+// inventory reads as a network hierarchy instead of an unsorted list.
+function segmentTree() {
+    const segments = report.segments || [];
+    const byCidr = new Map(segments.map(segment => [segment.cidr, segment]));
+    const children = new Map();
+    const roots = [];
+    for (const segment of segments) {
+        const parent = segment.parentCidr && byCidr.has(segment.parentCidr)
+            ? segment.parentCidr : null;
+        if (parent) {
+            if (!children.has(parent)) children.set(parent, []);
+            children.get(parent).push(segment);
+        } else {
+            roots.push(segment);
+        }
+    }
+    const ordered = list => list.slice().sort((a, b) => a.cidr.localeCompare(b.cidr));
+    return { roots: ordered(roots), children };
+}
+
+function renderSegments() {
+    const tree = document.getElementById("segmentTree");
+    const count = document.getElementById("subnetCount");
+    tree.replaceChildren();
+    if (!report || !report.segments?.length) {
+        if (count) count.textContent = "";
+        const item = document.createElement("li");
+        item.className = "empty";
+        item.textContent = "No subnets reported.";
+        tree.append(item);
+        return;
+    }
+    if (count) count.textContent = `(${report.segments.length})`;
+
+    const { roots, children } = segmentTree();
+    const addRow = (segment, level) => {
+        const item = document.createElement("li");
+        item.style.paddingLeft = `${level * 12}px`;
+        const cidr = document.createElement("span");
+        cidr.className = "cidr";
+        cidr.textContent = segment.cidr;
+        item.append(cidr);
+
+        // Coverage: a range that was only partly probed must not look empty.
+        const probed = Number(segment.hostsProbed || 0);
+        const total = Number(segment.hostsTotal || 0);
+        const parts = [];
+        if (total) parts.push(`${probed}/${total} probed`);
+        if (segment.sweepPolicy) parts.push(segment.sweepPolicy);
+        const devices = devicesIn(segment);
+        parts.push(`${devices} device${devices === 1 ? "" : "s"}`);
+        if (segment.description) parts.push(segment.description);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = parts.join(" · ");
+        item.append(meta);
+
+        if (segment.coveredBy) {
+            const flag = document.createElement("span");
+            flag.className = "flag";
+            flag.textContent = `covered by ${segment.coveredBy}`;
+            item.append(flag);
+        }
+        if (segment.discoveredBy?.length) {
+            const source = document.createElement("div");
+            source.className = "meta";
+            source.textContent = segment.discoveredBy.join(", ");
+            item.append(source);
+        }
+        tree.append(item);
+        for (const child of children.get(segment.cidr) || []) addRow(child, level + 1);
+    };
+    for (const root of roots) addRow(root, 0);
+}
+
 function updateStats() {
     const seconds = Math.max(0, report.finishedAt - report.startedAt) / 1000;
     document.getElementById("stats").textContent =
         `${report.devices?.length || 0} devices · ${report.vhosts?.length || 0} hosts · `
-        + `${report.vms?.length || 0} VMs · ${report.links?.length || 0} L2 links · ${seconds.toFixed(1)} s`;
+        + `${report.vms?.length || 0} VMs · ${report.segments?.length || 0} subnets · `
+        + `${report.links?.length || 0} L2 links · ${seconds.toFixed(1)} s`;
 }
 
 document.getElementById("refresh").onclick = loadReport;

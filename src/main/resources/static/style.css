@@ -20,7 +20,7 @@ button { cursor: pointer; }
 #stats { color: #9ca3af; white-space: nowrap; }
 main { height: calc(100vh - 64px); position: relative; }
 #graph { display: block; width: 100%; height: 100%; }
-#details, #legend, #error {
+#details, #legend, #error, #subnets {
     position: absolute; background: #1f2937; border: 1px solid #4b5563;
     border-radius: 8px; padding: 14px; box-shadow: 0 8px 24px #0006;
 }
@@ -31,6 +31,18 @@ table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
 td { padding: 4px; vertical-align: top; border-bottom: 1px solid #374151; }
 td:first-child { width: 105px; color: #9ca3af; }
 #legend { left: 16px; bottom: 16px; max-height: 40%; overflow: auto; }
+#subnets {
+    left: 16px; top: 16px; width: min(340px, calc(100vw - 32px));
+    max-height: 45%; overflow: auto;
+}
+#subnets h2 { margin: 0 0 8px; font-size: 13px; color: #93c5fd; font-weight: 600; }
+#subnets h2 span { color: #9ca3af; font-weight: 400; }
+#segmentTree { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+#segmentTree li { padding: 3px 0; border-bottom: 1px solid #374151; }
+#segmentTree .cidr { color: #e5e7eb; font-family: ui-monospace, monospace; }
+#segmentTree .meta { color: #9ca3af; font-size: 11px; }
+#segmentTree .flag { color: #fbbf24; font-size: 11px; margin-left: 4px; }
+#segmentTree .empty { color: #9ca3af; }
 #error { top: 16px; left: 50%; transform: translateX(-50%); color: #fecaca; }
 .legend-item { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
 .swatch { width: 11px; height: 11px; border-radius: 50%; }

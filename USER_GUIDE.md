@@ -156,6 +156,7 @@ Tips when names are missing:
 | `--sweep-policy` | `full` | What to probe: `full` sweeps the range (capped), `known` probes only addresses SNMP reported, `sample` probes known + a spread of the range. See §4.1. |
 | `--sample-hosts-per-subnet` | 32 | Addresses sampled across the range under `--sweep-policy sample`. |
 | `--pps` | unlimited | Caps probe starts per second. `--threads` limits concurrency; this limits rate. Lower it to protect weak switches. |
+| `--exclude` | none | A range that must never be probed (repeatable). Applies even when a seed or SNMP route encloses it. |
 | `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
 
 Example for a /16 split into /24s with a bigger pool:
@@ -332,9 +333,26 @@ Each segment records where it came from and how completely it was examined:
   `snmp-if@<router>`, `snmp-route@<router>`, `lldp-mgmt`, `vm-management@<host>`.
   A `…-mask-assumed` suffix marks a prefix that had to be guessed because the
   source reported no netmask.
+- **description** — the switch interface label (`ifAlias`, falling back to
+  `ifName`) for subnets learned from a router's attached interfaces, e.g.
+  `uplink-to-core`.
+- **vlan** — populated only when a source states it; host-level VLAN membership is
+  recorded on the device instead (see §6.3).
 
-`vlan`, `description` are reserved for the VLAN-aware discovery stage and are
-currently only populated when a source supplies them.
+### 6.3 Layer-2 and VLAN metadata on devices
+
+When a switch or router exposes its forwarding tables, each host gains:
+
+- `l2.switch` — the IP of the switch that reported the port.
+- `l2.bridgePort` / `l2.portName` — the bridge port number and its interface name,
+  e.g. `12` and `Gi1/0/12`.
+- `vlan.<id>` — the bridge port the host reaches on that VLAN, and
+  `vlan.<id>.name` when the switch names the VLAN.
+
+Sources: `dot1dTpFdbPort` + `dot1dBasePortIfIndex` for the VLAN-agnostic port,
+`dot1qTpFdbPort` (indexed by VLAN + MAC) for per-VLAN placement, and
+`dot1qVlanStaticName` for VLAN names. The web UI reads any `vlan.` key to colour
+and group by VLAN, so no separate field is needed.
 
 ## 7. Using the web UI
 
@@ -346,6 +364,13 @@ java -jar target/janus-0.0.1-SNAPSHOT.jar --web --server.port=8080 \
 
 The UI renders a d3 force-directed topology from the report and lets you switch
 layouts, colors, search hosts, and inspect a device detail panel.
+
+The **Subnets** panel lists every discovered network as a tree built from
+`parentCidr`/`depth`, each row showing its coverage (`probed/total`), the sweep
+policy used, how many devices fell inside it, the interface description when one
+is known, and a `covered by` flag when the range was skipped because a wider
+network had already been swept completely. A range that was only partly probed
+therefore reads as `0/65534 probed`, not as an empty network.
 
 REST endpoints (all GET):
 
@@ -361,8 +386,9 @@ Point it at a different report or directory with
 
 ## 8. Troubleshooting
 
-- **No devices at all.** Confirm the CIDR is reachable and not larger than `/22`.
-  Try disabling raw-socket strategies to isolate, then re-enable with privileges.
+- **No devices at all.** Confirm the CIDR is reachable, or that the range was not
+  reduced by `--sweep-policy known` without SNMP data. Try disabling raw-socket
+  strategies to isolate, then re-enable with privileges.
 - **ARP / LLDP warnings.** Expected without `CAP_NET_RAW`. Grant the capability or
   run with `sudo`.
 - **SNMP shows nothing.** Verify the community and that UDP/161 reaches the device.

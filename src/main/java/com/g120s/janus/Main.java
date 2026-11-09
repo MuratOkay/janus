@@ -47,6 +47,7 @@ public class Main {
                   --threads N --tcp-timeout MS --snmp-timeout MS
                   --max-subnets N --max-depth N --max-hosts-per-subnet N --out FILE
                   --sweep-policy known|sample|full --sample-hosts-per-subnet N --pps N
+                  --exclude CIDR       Range never to probe (repeatable)
                   --esxi HOST,USER,PASSWORD
                   --proxmox HOST,PORT,USER,PASSWORD
                   --kvm HOST,USER,PASSWORD

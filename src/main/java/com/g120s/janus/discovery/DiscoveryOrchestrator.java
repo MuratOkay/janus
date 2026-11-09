@@ -255,7 +255,8 @@ public class DiscoveryOrchestrator {
                     // An interface address is the hop traffic leaves that subnet through.
                     for (var iface : s.ifMasks().entrySet()) {
                         enqueue(state, toCidr(iface.getKey(), iface.getValue()),
-                                "snmp-if@" + d.ip.getHostAddress(), parent, iface.getKey());
+                                "snmp-if@" + d.ip.getHostAddress(), parent, iface.getKey(),
+                                describeInterface(s, s.ifIndexes().get(iface.getKey())));
                     }
                     // Everything the routing table advertises, honouring ipRouteMask
                     // and skipping invalid rows and non-routable networks.
@@ -279,6 +280,8 @@ public class DiscoveryOrchestrator {
                     for (String address : s.ifMasks().keySet()) collectKnown(state, address);
                     s.ipAddresses().forEach(address -> collectKnown(state, address));
                     collectKnown(state, d.ip.getHostAddress());
+                    // Locate hosts on switch ports and, where the device exposes it, per VLAN.
+                    applyBridgeTables(state, s, d);
                     break; // successful community
                 } catch (Exception ex) {
                     r.warnings.add("snmp@" + d.ip.getHostAddress() + ": " + ex.getMessage());
@@ -420,6 +423,12 @@ public class DiscoveryOrchestrator {
      */
     void enqueue(CrawlState state, Learned learned, String source,
                  NetworkSegment parent, String gateway) {
+        enqueue(state, learned, source, parent, gateway, null);
+    }
+
+    /** As above, also recording a human-readable description for the segment. */
+    void enqueue(CrawlState state, Learned learned, String source,
+                 NetworkSegment parent, String gateway, String description) {
         if (learned == null || learned.cidr() == null || !learned.cidr().contains("/")) return;
         String normalized;
         try {
@@ -440,11 +449,19 @@ public class DiscoveryOrchestrator {
             return;
         }
         if (state.visited.contains(normalized) || queued(state, normalized)) return;
+        String excludedBy = excludedBy(normalized);
+        if (excludedBy != null) {
+            // Record it so the report shows the range was seen and deliberately skipped.
+            addWarningOnce(state.r, "excluded " + normalized + " from " + source
+                    + " (matches --exclude " + excludedBy + ")");
+            return;
+        }
         if (state.visited.size() + state.frontier.size() >= cfg.maxSubnets) return;
         NetworkSegment segment = new NetworkSegment(normalized);
         segment.depth = depth;
         segment.parentCidr = parent == null ? null : parent.cidr;
         segment.gateway = gateway;
+        segment.description = description;
         segment.discoveredBy.add(source);
         if (learned.maskAssumed()) segment.discoveredBy.add(source + "-mask-assumed");
         state.frontier.add(segment);
@@ -453,6 +470,29 @@ public class DiscoveryOrchestrator {
     private static boolean queued(CrawlState state, String cidr) {
         for (NetworkSegment pending : state.frontier) {
             if (pending.cidr.equals(cidr)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The {@code --exclude} range covering this segment, or {@code null}. This is a
+     * safety guardrail: an operator who excludes a range must not have it probed
+     * just because a seed or an SNMP route happens to enclose it.
+     */
+    String excludedBy(String cidr) {
+        for (String excluded : cfg.excludeCidrs) {
+            if (Cidr.contains(excluded, cidr)) return excluded;
+        }
+        return null;
+    }
+
+    /** Is this single address inside an excluded range? */
+    boolean isExcluded(String address) {
+        Long value = Cidr.parseIp(address);
+        if (value == null) return false;
+        String host = Cidr.toIp(value) + "/32";
+        for (String excluded : cfg.excludeCidrs) {
+            if (Cidr.contains(excluded, host)) return true;
         }
         return false;
     }
@@ -564,6 +604,20 @@ public class DiscoveryOrchestrator {
      * range, so a large subnet is characterised without being swept.
      */
     List<InetAddress> hostsToProbe(CrawlState state, NetworkSegment seg) throws Exception {
+        return withoutExcluded(selectTargets(state, seg));
+    }
+
+    /** Drops any target that falls inside an {@code --exclude} range. */
+    List<InetAddress> withoutExcluded(List<InetAddress> targets) {
+        if (cfg.excludeCidrs.isEmpty()) return targets;
+        List<InetAddress> kept = new ArrayList<>(targets.size());
+        for (InetAddress target : targets) {
+            if (!isExcluded(target.getHostAddress())) kept.add(target);
+        }
+        return kept;
+    }
+
+    private List<InetAddress> selectTargets(CrawlState state, NetworkSegment seg) throws Exception {
         if (cfg.sweepPolicy == SweepPolicy.FULL) {
             Expansion full = expand(seg.cidr, cfg.maxHostsPerSubnet);
             warnIfTruncated(seg, full, state.r);
@@ -644,6 +698,63 @@ public class DiscoveryOrchestrator {
 
     private static void addWarningOnce(DiscoveryResult r, String warning) {
         if (!r.warnings.contains(warning)) r.warnings.add(warning);
+    }
+
+    /**
+     * Human-readable label for a router interface, from its ifAlias (operator-set)
+     * or ifName. Alias wins because operators name ports after where they go, e.g.
+     * "uplink-to-core".
+     */
+    static String describeInterface(SnmpScanner.SnmpResult s, String ifIndex) {
+        if (ifIndex == null) return null;
+        String alias = s.ifAliases().get(ifIndex);
+        if (alias != null && !alias.isBlank()) return alias.trim();
+        String name = s.ifNames().get(ifIndex);
+        return name == null || name.isBlank() ? null : name.trim();
+    }
+
+    /**
+     * Places hosts on switch ports using the bridge forwarding tables. The plain
+     * dot1d table gives the port; the Q-BRIDGE table repeats it per VLAN, which is
+     * what lets a host be attributed to a VLAN rather than only to a port.
+     */
+    static void applyBridgeTables(CrawlState state, SnmpScanner.SnmpResult s, Device router) {
+        boolean hasPorts = !s.bridgePorts().isEmpty();
+        boolean hasVlanPorts = !s.vlanBridgePorts().isEmpty();
+        if (!hasPorts && !hasVlanPorts) return;
+
+        Map<String, Device> byMac = new HashMap<>();
+        for (Device device : state.byIp.values()) {
+            if (device.mac != null) byMac.putIfAbsent(device.mac.toLowerCase(Locale.ROOT), device);
+        }
+        String switchIp = router.ip.getHostAddress();
+
+        if (hasPorts) {
+            for (var entry : s.bridgePorts().entrySet()) {
+                Device target = byMac.get(entry.getKey().toLowerCase(Locale.ROOT));
+                if (target == null) continue;
+                target.metadata.put("l2.switch", switchIp);
+                target.metadata.put("l2.bridgePort", entry.getValue());
+                String portIf = s.bridgePortIfIndexes().get(entry.getValue());
+                String name = portIf == null ? null : s.ifNames().get(portIf);
+                if (name != null && !name.isBlank()) target.metadata.put("l2.portName", name.trim());
+            }
+        }
+        if (hasVlanPorts) {
+            for (var entry : s.vlanBridgePorts().entrySet()) {
+                Integer vlan = SnmpScanner.vlanOfKey(entry.getKey());
+                String mac = SnmpScanner.macOfKey(entry.getKey());
+                if (vlan == null || mac == null) continue;
+                Device target = byMac.get(mac.toLowerCase(Locale.ROOT));
+                if (target == null) continue;
+                target.metadata.put("l2.switch", switchIp);
+                target.metadata.put("vlan." + vlan, entry.getValue());
+                String vlanName = s.vlanNames().get(String.valueOf(vlan));
+                if (vlanName != null && !vlanName.isBlank()) {
+                    target.metadata.put("vlan." + vlan + ".name", vlanName.trim());
+                }
+            }
+        }
     }
 
     /** Records a live address reported by a device, ignoring anything malformed. */

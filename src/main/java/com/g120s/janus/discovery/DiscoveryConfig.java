@@ -23,6 +23,8 @@ public final class DiscoveryConfig {
     }
 
     public final List<String> seedCidrs = new ArrayList<>();
+    /** Ranges that must never be probed, even when a seed or route covers them. */
+    public final List<String> excludeCidrs = new ArrayList<>();
     public final List<String> snmpCommunities = new ArrayList<>(List.of("public"));
     public final List<Credential> vmCreds = new ArrayList<>();
     public int threadPool = 64;
@@ -56,6 +58,7 @@ public final class DiscoveryConfig {
             String option = args[i];
             switch (option) {
                 case "--cidr" -> config.seedCidrs.add(requireCidr(value(args, ++i, option)));
+                case "--exclude" -> config.excludeCidrs.add(requireCidr(value(args, ++i, option)));
                 case "--snmp" -> {
                     if (!snmpCommunityGiven) {
                         config.snmpCommunities.clear();

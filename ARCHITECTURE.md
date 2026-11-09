@@ -243,6 +243,38 @@ inventory.
 those records into `TopologyLink` entries (local/remote device, port, VLAN,
 management IPs, capabilities).
 
+### 7.1 SNMP bridging tables
+
+LLDP only sees the switch you are plugged into. Router and switch bridging tables
+see every access port, so `SnmpScanner` walks them too: `ifName` and `ifAlias`,
+`dot1dTpFdbPort` with `dot1dBasePortIfIndex`, the Q-BRIDGE `dot1qTpFdbPort`, and
+`dot1qVlanStaticName`.
+
+Each family is indexed differently, so `indexKey` dispatches on the column rather
+than assuming one scheme:
+
+| Table | Index | Decoder |
+| --- | --- | --- |
+| `ipAddr` / `ipRoute` / `ipNetToMedia` | address | `ipFromSuffix` |
+| `ifName`, `ifAlias`, `dot1dBasePortIfIndex`, `dot1qVlanStaticName` | one integer | `singleIntKey` |
+| `dot1dTpFdbPort`, `dot1dTpFdbAddress` | 6-octet MAC | `macFromSuffix` |
+| `dot1qTpFdbPort` | VLAN + MAC | `vlanMacKey` |
+
+Using one decoder everywhere would silently attach every row to the wrong key.
+
+`enrich` consumes this in two ways:
+
+- `describeInterface` labels a subnet from the interface that announced it,
+  preferring the operator-set `ifAlias` over `ifName`.
+- `applyBridgeTables` records `l2.switch`, `l2.bridgePort`, `l2.portName` and,
+  from the Q-BRIDGE table, `vlan.<id>` and `vlan.<id>.name` on each host. Only
+  MACs already known from another strategy are matched, so the tables annotate
+  hosts rather than inventing them.
+
+`NetworkSegment.vlan` is deliberately left empty: no source states which VLAN an
+IP subnet maps to, so any value there would be a guess. VLAN membership is
+recorded where it is observed — per host MAC.
+
 ## 8. Web layer
 
 `JanusApplication` starts a Spring MVC app when `Main` is invoked with `--web`.
