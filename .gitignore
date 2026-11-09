@@ -32,3 +32,9 @@ build/
 ### VS Code ###
 .vscode/
 janus.code-workspace
+### Build output ###
+*.jar
+
+### Scan output ###
+discovery-report.json
+reports/

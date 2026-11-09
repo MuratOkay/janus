@@ -54,8 +54,9 @@ What happens:
    set (SSH, SMB, RDP, WinRM, ESXi, Proxmox, VNC, ...).
 2. It pings, and on matching local segments it also does ARP plus mDNS/SSDP/NetBIOS.
 3. Reachable hosts are enriched: OUI vendor lookup, SNMP `sysDescr`/`sysName`,
-   routing and ARP tables (new subnets are queued for crawling), virtualization
-   fingerprinting, and an OS guess.
+   the router's directly attached networks (`ipAdEntNetMask`) and routing table
+   (honouring `ipRouteMask`) plus its ARP table. Newly learned subnets keep their
+   real prefix and are queued for crawling.
 4. If virtualization credentials were supplied, their management subnets are added
    to the crawl and their VMs are enumerated.
 5. VMs are matched to hosts by MAC address, LLDP/CDP is applied to build L2 links,
@@ -150,7 +151,8 @@ Tips when names are missing:
 | `--tcp-timeout` | 500 ms | Lower on low-latency LANs, raise over WAN/VPN links. |
 | `--snmp-timeout` | 1000 ms | Raise for slow or busy network devices. |
 | `--max-subnets` | 64 | Caps total segments crawled (protects against runaway route-table expansion). |
-| `--max-depth` | 4 | Caps crawl depth. |
+| `--max-depth` | 4 | Maximum hops from a seed. A subnet discovered while crawling depth *n* becomes depth *n+1*; anything past the limit is reported, not silently dropped. |
+| `--max-hosts-per-subnet` | 1024 | Caps how many addresses are probed per segment. Raise it to cover a `/16` fully; a truncated segment is reported as a warning. |
 | `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
 
 Example for a /16 split into /24s with a bigger pool:
@@ -160,8 +162,10 @@ java -jar target/janus-0.0.1-SNAPSHOT.jar \
   --cidr 10.20.0.0/16 --threads 256 --max-subnets 256 --out reports/dc.json
 ```
 
-Segments larger than `/22` are rejected per segment to avoid accidental
-full-range sweeps; split them into smaller `--cidr` values.
+Wide segments are no longer rejected: a `/16` is expanded up to
+`--max-hosts-per-subnet` addresses and the run reports exactly how much of it was
+covered. Prefixes below `/8` are refused outright. Sweeping a large range host by
+host is slow, so prefer letting SNMP-discovered subnets drive the crawl.
 
 ## 5. Virtualization inventory
 
@@ -249,6 +253,41 @@ Field reference:
 
 Top-level `vhosts`, `vms`, `links`, `segments`, and `warnings` mirror the CLI
 summary and let consumers render topology or triage partial failures.
+
+### 6.2 `segments` — the discovered subnet inventory
+
+Each segment records where it came from and how completely it was examined:
+
+```json
+{
+  "cidr": "10.0.5.0/24",
+  "gateway": "10.0.0.1",
+  "parentCidr": "10.0.0.0/16",
+  "depth": 1,
+  "coveredBy": null,
+  "hostsProbed": 254,
+  "hostsTotal": 254,
+  "discoveredBy": ["snmp-route@10.0.0.1"]
+}
+```
+
+- **cidr** — always canonical (`10.0.5.0/24`, never `10.0.5.7/24`).
+- **parentCidr / depth** — the segment this one was learned from and its distance
+  in hops from a seed. Seeds have `depth: 0` and `parentCidr: null`.
+- **gateway** — the next hop for a routed subnet, or the router interface address
+  for a directly attached one. `null` for seeds taken from a local interface.
+- **hostsProbed / hostsTotal** — how many of the range's usable addresses were
+  actually probed versus how many exist. `hostsProbed < hostsTotal` means the
+  sweep was capped by `--max-hosts-per-subnet`; a warning says the same.
+- **coveredBy** — set when the range was already swept as part of a wider,
+  fully scanned network, so it was recorded but deliberately not re-scanned.
+- **discoveredBy** — provenance: `seed`, `local-interface`, `local-route`,
+  `snmp-if@<router>`, `snmp-route@<router>`, `lldp-mgmt`, `vm-management@<host>`.
+  A `…-mask-assumed` suffix marks a prefix that had to be guessed because the
+  source reported no netmask.
+
+`vlan`, `description` are reserved for the VLAN-aware discovery stage and are
+currently only populated when a source supplies them.
 
 ## 7. Using the web UI
 

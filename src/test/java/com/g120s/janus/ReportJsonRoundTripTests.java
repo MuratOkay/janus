@@ -3,6 +3,7 @@ package com.g120s.janus;
 import com.g120s.janus.configuration.JacksonConfig;
 import com.g120s.janus.model.Device;
 import com.g120s.janus.model.DiscoveryResult;
+import com.g120s.janus.model.NetworkSegment;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -47,6 +48,31 @@ class ReportJsonRoundTripTests {
 
         DiscoveryResult decoded = mapper.readValue(mapper.writeValueAsString(result), DiscoveryResult.class);
         assertNull(decoded.devices.getFirst().ip);
+    }
+
+    @Test
+    void segmentHierarchySurvivesRoundTrip() throws Exception {
+        DiscoveryResult original = new DiscoveryResult();
+        NetworkSegment segment = new NetworkSegment("10.0.5.0/24");
+        segment.parentCidr = "10.0.0.0/16";
+        segment.depth = 2;
+        segment.gateway = "10.0.0.1";
+        segment.coveredBy = "10.0.0.0/16";
+        segment.hostsProbed = 254;
+        segment.hostsTotal = 254;
+        segment.discoveredBy.add("snmp-if@10.0.0.1");
+        original.segments.add(segment);
+
+        DiscoveryResult decoded = mapper.readValue(mapper.writeValueAsString(original), DiscoveryResult.class);
+        NetworkSegment read = decoded.segments.getFirst();
+        assertEquals("10.0.5.0/24", read.cidr);
+        assertEquals("10.0.0.0/16", read.parentCidr);
+        assertEquals(2, read.depth);
+        assertEquals("10.0.0.1", read.gateway);
+        assertEquals("10.0.0.0/16", read.coveredBy);
+        assertEquals(254, read.hostsProbed);
+        assertEquals(254, read.hostsTotal);
+        assertEquals(java.util.Set.of("snmp-if@10.0.0.1"), read.discoveredBy);
     }
 
     @Test

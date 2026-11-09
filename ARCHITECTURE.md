@@ -68,12 +68,37 @@ hands the model to either the CLI serializer or the Spring web layer.
 
 `DiscoveryOrchestrator.run()` is a breadth-first crawl:
 
-1. **Seeds.** Uses `--cidr` values, or the host's local IPv4 networks when none
-   are given (`localCidrs`).
+1. **Seeds.** Uses `--cidr` values; otherwise every network the host can reach,
+   which is its local IPv4 interfaces (`localCidrs`) *plus* its own routing table
+   (`LocalRoutes`, parsed from `/proc/net/route`). The route table matters because
+   a static route to another LAN segment, or a bridge interface that is down but
+   still routed, is a subnet no interface enumeration reports.
 2. **BFS loop.** For each unvisited segment (bounded by `maxSubnets` and
-   `maxDepth`):
+   `maxDepth`) `crawlSegment` runs the discovery for that one network:
    - `discoverHosts` runs the enabled host-discovery strategies.
    - `enrich` is called for each device found in that segment.
+
+   A failing segment is recorded as a warning and the crawl continues; one
+   unparseable or unreachable network must never abort the whole run. Every
+   candidate subnet passes through `enqueue`, which canonicalizes the CIDR,
+   drops duplicates and refuses oversized ranges (`Cidr.MIN_PREFIX`), so segments
+   learned from SNMP, LLDP and hypervisor APIs are all directly comparable.
+   Very large segments are expanded only up to `maxHostsPerSubnet` addresses and
+   the shortfall is reported instead of silently under-reporting a network.
+
+   **Depth is measured in hops, not network count.** A seed has `depth = 0` and
+   every subnet learned while crawling a segment gets `parentCidr` set and
+   `depth = parent.depth + 1`. `--max-depth` therefore limits how far from the
+   seed the crawl may wander, and a network beyond that limit is reported rather
+   than silently dropped.
+
+   **Containment suppression.** When a segment is dequeued, `coveringSegment`
+   looks for an already swept network that fully encloses it. If one exists the
+   segment is recorded with `coveredBy` set and is *not* swept again — the host
+   inventory cannot gain anything from it, but the subnet inventory stays
+   complete. Only segments whose sweep ran to completion count, judged by
+   `fullyScanned` (`hostsProbed >= hostsTotal`). A truncated sweep leaves part of
+   its range unexamined, so it never stands in for a narrower network.
 3. **Hypervisor APIs.** Each `Credential` is dispatched to the matching
    discovery class; management subnets reported by hypervisors are pushed back
    onto the frontier so they get crawled too.
@@ -105,8 +130,13 @@ multiple strategies enrich the same device:
 3. **Reverse DNS** — `NameResolver.reverseDns` records a `ptr` name.
 4. **SNMP** (`SnmpScanner.query`, tried community by community until one works)
    — records `sysName` as the `snmp` name, sets `sysDescr`, infers
-   `ROUTER`/`SWITCH`, queues new segments from the routing table, and harvests
-   the ARP table into peer devices.
+   `ROUTER`/`SWITCH`, queues new segments from the interface table and the routing
+   table, and harvests the ARP table into peer devices. Prefixes come from
+   `ipAdEntNetMask` (`1.3.6.1.2.1.4.20.1.3`) and `ipRouteMask`
+   (`1.3.6.1.2.1.4.21.1.11`); rows are paired by table index, not by column
+   position, and `ipRouteType invalid(2)` rows are skipped. Only when a device
+   reports no mask at all is a `/24` assumed, and that segment is then tagged
+   `…-mask-assumed` so the guess stays visible in the report.
 5. **Virtualization fingerprint** — `VirtualizationDetector.guessType`; on a hit,
    a `VirtualizationHost` is registered and the device marked accordingly.
 6. **VM detection** — known VM MAC ranges mark the device `VIRTUAL_MACHINE`.

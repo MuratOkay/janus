@@ -13,15 +13,24 @@ public final class SnmpScanner {
     private static final OID SYS_DESCR = new OID("1.3.6.1.2.1.1.1.0");
     private static final OID SYS_NAME  = new OID("1.3.6.1.2.1.1.5.0");
     private static final OID SYS_LOC   = new OID("1.3.6.1.2.1.1.6.0");
-    private static final OID IP_ADDR   = new OID("1.3.6.1.2.1.4.20.1.1");
-    private static final OID ROUTE_DST = new OID("1.3.6.1.2.1.4.21.1.1");
-    private static final OID ROUTE_NH  = new OID("1.3.6.1.2.1.4.21.1.7");
-    private static final OID ARP_IP    = new OID("1.3.6.1.2.1.4.22.1.3");   // ipNetToMediaNetAddress
-    private static final OID ARP_MAC   = new OID("1.3.6.1.2.1.4.22.1.2");   // ipNetToMediaPhysAddress
+    // ipAddrTable is indexed by address, so the row index is the address itself.
+    private static final OID IP_ADDR   = new OID("1.3.6.1.2.1.4.20.1.1");   // ipAdEntAddr
+    private static final OID IP_MASK   = new OID("1.3.6.1.2.1.4.20.1.3");   // ipAdEntNetMask
+    // ipRouteTable is indexed by destination; the mask lives in a separate column.
+    private static final OID ROUTE_NH  = new OID("1.3.6.1.2.1.4.21.1.7");    // ipRouteNextHop
+    private static final OID ROUTE_TYPE= new OID("1.3.6.1.2.1.4.21.1.8");    // ipRouteType
+    private static final OID ROUTE_MASK= new OID("1.3.6.1.2.1.4.21.1.11");   // ipRouteMask
+    private static final OID ARP_MAC   = new OID("1.3.6.1.2.1.4.22.1.2");    // ipNetToMediaPhysAddress
+
+    /** ipRouteType `invalid`, per RFC 1213 — the row is not a usable route. */
+    static final String ROUTE_TYPE_INVALID = "2";
 
     public record SnmpResult(String sysDescr, String sysName, String sysLoc,
                              List<String> ipAddresses,
+                             Map<String,String> ifMasks,
                              Map<String,String> routes,
+                             Map<String,String> routeMasks,
+                             Map<String,String> routeTypes,
                              Map<String,String> arpTable) {}
 
     public static SnmpResult query(String host, String community, int timeoutMs) throws Exception {
@@ -41,23 +50,24 @@ public final class SnmpScanner {
             String name = get(snmp, t, SYS_NAME);
             String loc  = get(snmp, t, SYS_LOC);
 
-            List<String> ips = walkColumn(snmp, t, IP_ADDR).stream()
-                    .map(v -> v.replaceFirst("^.*\\.", "")).toList();
+            // Directly attached networks: address -> netmask. This is the most
+            // authoritative view of a router's own subnets.
+            Map<String,String> ifMasks = walkIndexed(snmp, t, IP_MASK);
+            Map<String,String> addrs   = walkIndexed(snmp, t, IP_ADDR);
 
-            Map<String,String> routes = new LinkedHashMap<>();
-            Map<String,String> arps   = new LinkedHashMap<>();
-            List<String> dsts = walkColumn(snmp, t, ROUTE_DST);
-            List<String> nhs  = walkColumn(snmp, t, ROUTE_NH);
-            for (int i = 0; i < Math.min(dsts.size(), nhs.size()); i++)
-                routes.put(dsts.get(i), nhs.get(i));
+            // Rows are paired by their table index rather than by position, so a
+            // partially populated column can never shift values onto the wrong route.
+            Map<String,String> routeMasks = walkIndexed(snmp, t, ROUTE_MASK);
+            Map<String,String> routeTypes = walkIndexed(snmp, t, ROUTE_TYPE);
+            Map<String,String> routes     = walkIndexed(snmp, t, ROUTE_NH);
 
-            List<String> arpIps = walkColumn(snmp, t, ARP_IP);
-            List<String> arpMcs = walkColumn(snmp, t, ARP_MAC);
-            for (int i = 0; i < Math.min(arpIps.size(), arpMcs.size()); i++)
-                arps.put(arpIps.get(i), arpMcs.get(i));
+            // ipNetToMediaTable is indexed by ifIndex + address, so the address is
+            // recovered from the tail of the index.
+            Map<String,String> arps = walkIndexed(snmp, t, ARP_MAC);
 
             snmp.close();
-            return new SnmpResult(descr, name, loc, ips, routes, arps);
+            return new SnmpResult(descr, name, loc, List.copyOf(addrs.keySet()),
+                    ifMasks, routes, routeMasks, routeTypes, arps);
         }
     }
 
@@ -71,8 +81,13 @@ public final class SnmpScanner {
         return vb.getVariable().isException() ? null : vb.getVariable().toString();
     }
 
-    private static List<String> walkColumn(Snmp snmp, Target<Address> t, OID col) throws Exception {
-        List<String> out = new ArrayList<>();
+    /**
+     * Walks a table column and pairs each row's index with its value. The index is
+     * decoded back into a dotted address where the table is IP-indexed, which is
+     * what keeps a destination and its mask aligned.
+     */
+    private static Map<String,String> walkIndexed(Snmp snmp, Target<Address> t, OID col) throws Exception {
+        Map<String,String> out = new LinkedHashMap<>();
         OID cur = col;
         while (true) {
             PDU pdu = new PDU();
@@ -82,9 +97,33 @@ public final class SnmpScanner {
             if (r == null || r.getResponse() == null) break;
             VariableBinding vb = r.getResponse().get(0);
             if (!vb.getOid().startsWith(col) || vb.getVariable().isException()) break;
-            out.add(vb.getVariable().toString());
+            String key = indexToIp(col, vb.getOid());
+            if (key != null) out.put(key, vb.getVariable().toString());
             cur = vb.getOid();
         }
         return out;
+    }
+
+    /** Decodes the table index that follows {@code column} into a dotted address. */
+    static String indexToIp(OID column, OID row) {
+        if (row.size() <= column.size()) return null;
+        int[] suffix = new int[row.size() - column.size()];
+        for (int i = 0; i < suffix.length; i++) suffix[i] = row.get(column.size() + i);
+        return ipFromSuffix(suffix);
+    }
+
+    /**
+     * Recovers the address from a table index. A four element suffix is the address
+     * itself; longer suffixes (ipNetToMediaTable prefixes the ifIndex) carry it in
+     * the last four sub-identifiers.
+     */
+    static String ipFromSuffix(int[] suffix) {
+        if (suffix == null || suffix.length < 4) return null;
+        int offset = suffix.length - 4;
+        for (int i = offset; i < suffix.length; i++) {
+            if (suffix[i] < 0 || suffix[i] > 255) return null;
+        }
+        return suffix[offset] + "." + suffix[offset + 1] + "."
+                + suffix[offset + 2] + "." + suffix[offset + 3];
     }
 }

@@ -6,6 +6,11 @@ public class NetworkSegment {
     public String gateway;
     public String vlan;
     public String description;
+    public String parentCidr;      // segment that led here; null for seeds
+    public int depth;              // hops from a seed, 0 for seeds themselves
+    public String coveredBy;       // wider already-crawled segment holding this range
+    public int hostsProbed;        // addresses actually probed
+    public long hostsTotal;        // usable addresses in the range
     public Set<String> discoveredBy = new TreeSet<>();  // iface, snmp-route, lldp, dhcp, vmware-portgroup...
     public NetworkSegment(String cidr) { this.cidr = cidr; }
 }

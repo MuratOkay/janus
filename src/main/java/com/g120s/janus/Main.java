@@ -45,7 +45,7 @@ public class Main {
                   --no-lldp --lldp-duration MS
                   --no-dns --no-tls-names --dns-server IP --dns-timeout MS
                   --threads N --tcp-timeout MS --snmp-timeout MS
-                  --max-subnets N --max-depth N --out FILE
+                  --max-subnets N --max-depth N --max-hosts-per-subnet N --out FILE
                   --esxi HOST,USER,PASSWORD
                   --proxmox HOST,PORT,USER,PASSWORD
                   --kvm HOST,USER,PASSWORD

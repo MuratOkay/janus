@@ -2,6 +2,8 @@ package com.g120s.janus.discovery;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class DiscoveryConfigTests {
@@ -60,6 +62,42 @@ class DiscoveryConfigTests {
         assertEquals("libvirt", config.vmCreds.getLast().kind);
         assertFalse(config.lldp);
         assertEquals(1000, config.lldpDurationMs);
+    }
+
+    @Test
+    void normalizesSeedNetworksSoHostBitsCannotBreakMatching() {
+        DiscoveryConfig config = DiscoveryConfig.fromArgs(new String[] {
+                "--cidr", "192.168.68.5/22"
+        });
+
+        // A seed with host bits used to disable ARP for its own segment, because the
+        // interface CIDR comparison was a plain string equality check.
+        assertEquals(List.of("192.168.68.0/22"), config.seedCidrs);
+    }
+
+    @Test
+    void parsesHostCapPerSubnet() {
+        DiscoveryConfig config = DiscoveryConfig.fromArgs(new String[] {
+                "--max-hosts-per-subnet", "4096"
+        });
+
+        assertEquals(4096, config.maxHostsPerSubnet);
+    }
+
+    @Test
+    void hostCapDefaultsToASingleSlash22WorthOfHosts() {
+        assertEquals(1024, DiscoveryConfig.fromArgs(new String[] {}).maxHostsPerSubnet);
+    }
+
+    @Test
+    void rejectsPrefixesTooWideToBeALan() {
+        // /7 and wider are refused outright, before anything is probed.
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> DiscoveryConfig.fromArgs(new String[] {"--cidr", "10.0.0.0/7"}));
+        assertTrue(error.getMessage().contains("prefix too small"), error.getMessage());
+
+        assertEquals("10.0.0.0/8", DiscoveryConfig.fromArgs(
+                new String[] {"--cidr", "10.0.0.0/8"}).seedCidrs.getFirst());
     }
 
     @Test

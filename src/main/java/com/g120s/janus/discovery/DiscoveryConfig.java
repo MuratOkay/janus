@@ -30,6 +30,7 @@ public final class DiscoveryConfig {
     public int snmpTimeoutMs = 1_000;
     public int maxSubnets = 64;
     public int maxDepth = 4;
+    public int maxHostsPerSubnet = 1024;   // caps probing of very large ranges
     public int lldpDurationMs = 45_000;
     public String outputPath = "discovery-report.json";
     public int dnsTimeoutMs = 800;
@@ -68,6 +69,8 @@ public final class DiscoveryConfig {
                 case "--dns-server" -> config.dnsServer = nonBlank(value(args, ++i, option), option);
                 case "--max-subnets" -> config.maxSubnets = positiveInt(value(args, ++i, option), option);
                 case "--max-depth" -> config.maxDepth = positiveInt(value(args, ++i, option), option);
+                case "--max-hosts-per-subnet" ->
+                        config.maxHostsPerSubnet = positiveInt(value(args, ++i, option), option);
                 case "--lldp-duration" -> config.lldpDurationMs = positiveInt(value(args, ++i, option), option);
                 case "--tcp" -> config.tcp = true;
                 case "--no-tcp" -> config.tcp = false;
@@ -145,8 +148,8 @@ public final class DiscoveryConfig {
     private static void validateCredentials(List<Credential> credentials) {
         for (Credential credential : credentials) {
             if (credential.kind.equals("hyperv") || credential.kind.equals("vcenter")) {
-                nonBlank(credential.user, "--" + credential.kind + "-user gerekli");
-                nonBlank(credential.passOrKey, "--" + credential.kind + "-pass gerekli");
+                nonBlank(credential.user, "--" + credential.kind + "-user is required");
+                nonBlank(credential.passOrKey, "--" + credential.kind + "-pass is required");
             }
         }
     }
@@ -172,22 +175,18 @@ public final class DiscoveryConfig {
         throw new IllegalArgumentException(option + " must be a positive integer");
     }
 
+    /** Parses and canonicalizes a CIDR; host bits are dropped so comparisons work. */
     private static String requireCidr(String cidr) {
-        String[] parts = cidr.split("/", -1);
-        if (parts.length != 2) throw new IllegalArgumentException("Invalid CIDR: " + cidr);
+        String normalized;
         try {
-            int prefix = Integer.parseInt(parts[1]);
-            String[] octets = parts[0].split("\\.", -1);
-            if (prefix < 0 || prefix > 32 || octets.length != 4) {
-                throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr);
-            }
-            for (String octet : octets) {
-                int value = Integer.parseInt(octet);
-                if (value < 0 || value > 255) throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr);
-            }
-            return cidr;
-        } catch (NumberFormatException e) {
+            normalized = Cidr.normalize(cidr);
+        } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Invalid IPv4 CIDR: " + cidr, e);
         }
+        if (Cidr.prefix(normalized) < Cidr.MIN_PREFIX) {
+            throw new IllegalArgumentException("CIDR prefix too small: " + cidr
+                    + " (minimum /" + Cidr.MIN_PREFIX + "; scan a narrower range)");
+        }
+        return normalized;
     }
 }

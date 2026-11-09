@@ -30,36 +30,24 @@ public class DiscoveryOrchestrator {
             }
         }
 
-        // 1) Seed segments
-        Deque<NetworkSegment> frontier = new ArrayDeque<>();
-        Set<String> visited = new HashSet<>();
+        // 1) Seed segments: explicit --cidr values, otherwise every network this host
+        // can reach — its interface networks plus whatever its own routing table knows.
+        CrawlState state = new CrawlState(r);
         if (cfg.seedCidrs.isEmpty()) {
-            for (String cidr : localCidrs()) frontier.add(new NetworkSegment(cidr));
+            for (String cidr : localCidrs()) {
+                enqueue(state, new Learned(cidr, false), "local-interface", null, null);
+            }
+            for (LocalRoutes.Route route : LocalRoutes.read()) {
+                enqueue(state, new Learned(route.cidr(), false), "local-route", null, route.gateway());
+            }
         } else {
-            for (String c : cfg.seedCidrs) frontier.add(new NetworkSegment(c));
-        }
-
-        Map<String, Device> byIp = new HashMap<>();
-
-        // 2) BFS
-        int generated = 0;
-        while (!frontier.isEmpty() && generated < cfg.maxSubnets && visited.size() < cfg.maxDepth * 64) {
-            NetworkSegment seg = frontier.poll();
-            if (!visited.add(seg.cidr)) continue;
-            r.segments.add(seg);
-            generated++;
-
-            // 2a) Host discovery (parallel strategies)
-            discoverHosts(seg, byIp, r);
-
-            // 2b) Services + SNMP for every active device on this segment
-            for (Device d : byIp.values()) {
-                if (!sameCidr(d.ip, seg.cidr)) continue;
-                enrich(d, byIp, r, frontier, visited);
+            for (String c : cfg.seedCidrs) {
+                enqueue(state, new Learned(c, false), "seed", null, null);
             }
         }
 
-        r.devices.addAll(byIp.values());
+        // 2) BFS
+        drain(state);
 
         // 3) Virtualization APIs (using the supplied credentials)
         for (DiscoveryConfig.Credential c : cfg.vmCreds) {
@@ -80,10 +68,10 @@ public class DiscoveryOrchestrator {
                 };
                 for (VirtualizationHost h : found) {
                     r.vhosts.add(h);
-                    // Add the management subnets to the BFS
+                    // Add the management subnets to the crawl. They come from
+                    // operator-supplied credentials, so they are treated as seeds.
                     for (String net : h.managementNets) {
-                        if (!net.contains("/")) continue;
-                        if (!visited.contains(net)) frontier.add(new NetworkSegment(net));
+                        enqueue(state, new Learned(net, false), "vm-management@" + h.ip, null, h.ip);
                     }
                 }
             } catch (Exception ex) {
@@ -91,14 +79,9 @@ public class DiscoveryOrchestrator {
             }
         }
         // Scan the newly added networks as well
-        while (!frontier.isEmpty()) {
-            NetworkSegment seg = frontier.poll();
-            if (!visited.add(seg.cidr) || generated++ >= cfg.maxSubnets) continue;
-            r.segments.add(seg);
-            discoverHosts(seg, byIp, r);
-        }
+        drain(state);
         r.devices.clear();
-        r.devices.addAll(byIp.values());
+        r.devices.addAll(state.byIp.values());
 
         List<NeighborRecord> neighbors = new ArrayList<>();
         for (Future<List<NeighborRecord>> future : sniffFutures) {
@@ -112,23 +95,15 @@ public class DiscoveryOrchestrator {
             TopologyBuilder.apply(r, neighbors);
             for (Device device : r.devices) {
                 if (device.ip == null) continue;
-                byIp.putIfAbsent(device.ip.getHostAddress(), device);
-                String cidr = toCidr(device.ip.getHostAddress());
-                if (cidr != null && !visited.contains(cidr)) {
-                    NetworkSegment segment = new NetworkSegment(cidr);
-                    segment.discoveredBy.add("lldp-mgmt");
-                    frontier.add(segment);
-                }
+                state.byIp.putIfAbsent(device.ip.getHostAddress(), device);
+                // A neighbour advertisement names a management address but carries no
+                // mask, so the /24 assumption is flagged by toCidr.
+                enqueue(state, toCidr(device.ip.getHostAddress(), null), "lldp-mgmt",
+                        null, device.ip.getHostAddress());
             }
-            while (!frontier.isEmpty() && generated < cfg.maxSubnets) {
-                NetworkSegment segment = frontier.poll();
-                if (!visited.add(segment.cidr)) continue;
-                r.segments.add(segment);
-                generated++;
-                discoverHosts(segment, byIp, r);
-            }
+            drain(state);
             r.devices.clear();
-            r.devices.addAll(byIp.values());
+            r.devices.addAll(state.byIp.values());
         }
 
         deduplicateVirtualization(r);
@@ -141,13 +116,14 @@ public class DiscoveryOrchestrator {
         return r;
     }
 
-    private void discoverHosts(NetworkSegment seg, Map<String, Device> byIp, DiscoveryResult r)
+    private void discoverHosts(CrawlState state, NetworkSegment seg, Expansion expansion)
             throws Exception {
+        Map<String, Device> byIp = state.byIp;
+        DiscoveryResult r = state.r;
         // --- TCP sweep
-        if (cfg.tcp) {
-            List<InetAddress> ips = expand(seg.cidr, 1024);
+        if (cfg.tcp && expansion != null) {
             Map<InetAddress, List<Integer>> scans = new LinkedHashMap<>();
-            for (InetAddress ip : ips) {
+            for (InetAddress ip : expansion.addresses()) {
                 scans.put(ip, HostScanners.tcpScan(pool, ip, probePorts, cfg.tcpTimeoutMs));
             }
             for (var scan : scans.entrySet()) {
@@ -161,8 +137,8 @@ public class DiscoveryOrchestrator {
             }
         }
         // --- ICMP
-        if (cfg.icmp) {
-            for (InetAddress ip : expand(seg.cidr, 1024)) {
+        if (cfg.icmp && expansion != null) {
+            for (InetAddress ip : expansion.addresses()) {
                 if (HostScanners.icmp(ip, 800)) {
                     Device d = byIp.computeIfAbsent(ip.getHostAddress(), k -> new Device());
                     d.ip = ip; d.discoveredBy.add("icmp");
@@ -208,7 +184,9 @@ public class DiscoveryOrchestrator {
             try {
                 for (String ifName : localIfaces()) {
                     String local = localCidr(ifName);
-                    if (local == null || !local.equals(seg.cidr)) continue;
+                    // Compare canonical forms: a seed such as 192.168.68.5/22 must
+                    // still match the interface's 192.168.68.0/22.
+                    if (local == null || !Cidr.normalize(local).equals(seg.cidr)) continue;
                     for (L2Scanner.ArpEntry e : L2Scanner.arpScan(ifName, seg.cidr, 3000)) {
                         Device d = byIp.computeIfAbsent(e.ip(), k -> new Device());
                         d.ip = InetAddress.getByName(e.ip());
@@ -235,8 +213,9 @@ public class DiscoveryOrchestrator {
     }
 
     /** System information + extra networks (route/ARP) through SNMP. */
-    private void enrich(Device d, Map<String, Device> byIp, DiscoveryResult r,
-                        Deque<NetworkSegment> frontier, Set<String> visited) {
+    private void enrich(CrawlState state, Device d, NetworkSegment parent) {
+        Map<String, Device> byIp = state.byIp;
+        DiscoveryResult r = state.r;
         if (d.ip == null) return;
         if (d.vendor == null) {
             String vendor = VirtualizationDetector.vendorByOuiPrefix(d.mac);
@@ -269,15 +248,21 @@ public class DiscoveryOrchestrator {
                     if (desc.contains("router") || desc.contains("ios") || desc.contains("junos"))
                         d.kind = Device.Kind.ROUTER;
                     else if (desc.contains("switch")) d.kind = Device.Kind.SWITCH;
-                    // Extra networks: the non-default entries in the routing table
+                    // Directly attached networks: the most authoritative view of the
+                    // router's own subnets, with the real prefix from ipAdEntNetMask.
+                    // An interface address is the hop traffic leaves that subnet through.
+                    for (var iface : s.ifMasks().entrySet()) {
+                        enqueue(state, toCidr(iface.getKey(), iface.getValue()),
+                                "snmp-if@" + d.ip.getHostAddress(), parent, iface.getKey());
+                    }
+                    // Everything the routing table advertises, honouring ipRouteMask
+                    // and skipping invalid rows and non-routable networks.
                     for (String dst : s.routes().keySet()) {
-                        String cidr = toCidr(dst);
-                        if (cidr != null && !cidr.startsWith("0.0.0.0")
-                                && !visited.contains(cidr) && cfg.maxSubnets > 0) {
-                            NetworkSegment ns = new NetworkSegment(cidr);
-                            ns.discoveredBy.add("snmp-route@" + d.ip.getHostAddress());
-                            if (visited.size() < cfg.maxSubnets) frontier.add(ns);
-                        }
+                        if (SnmpScanner.ROUTE_TYPE_INVALID.equals(s.routeTypes().get(dst))) continue;
+                        Learned learned = toCidr(dst, s.routeMasks().get(dst));
+                        if (learned == null || isUnroutable(learned.cidr())) continue;
+                        enqueue(state, learned, "snmp-route@" + d.ip.getHostAddress(),
+                                parent, s.routes().get(dst));
                     }
                     // Collect MACs from the ARP table
                     for (var e : s.arpTable().entrySet()) {
@@ -327,6 +312,143 @@ public class DiscoveryOrchestrator {
 
     // -- helpers ---------------------------------------------------------
 
+    /**
+     * State of a single crawl. Bundling it keeps the recursive part of the BFS
+     * explicit: what is queued, what has been swept, and what was learned where.
+     */
+    static final class CrawlState {
+        final Deque<NetworkSegment> frontier = new ArrayDeque<>();
+        final Set<String> visited = new HashSet<>();
+        /** Segments already swept, by CIDR, used for containment suppression. */
+        final Map<String, NetworkSegment> swept = new LinkedHashMap<>();
+        final Map<String, Device> byIp = new HashMap<>();
+        final DiscoveryResult r;
+        int generated;
+
+        CrawlState(DiscoveryResult r) {
+            this.r = r;
+        }
+    }
+
+    /** Crawls queued segments until the queue empties or {@code maxSubnets} is hit. */
+    private void drain(CrawlState state) {
+        while (!state.frontier.isEmpty() && state.generated < cfg.maxSubnets) {
+            NetworkSegment seg = state.frontier.poll();
+            if (!state.visited.add(seg.cidr)) continue;
+            state.generated++;
+            NetworkSegment covering = coveringSegment(state, seg.cidr);
+            if (covering != null) {
+                // A wider network was already swept end to end, so this range holds
+                // no host that has not been seen. It is still recorded: the subnet
+                // inventory must stay complete even when a sweep is skipped.
+                seg.coveredBy = covering.cidr;
+                state.r.segments.add(seg);
+                continue;
+            }
+            state.swept.put(seg.cidr, seg);
+            crawlSegment(state, seg);
+        }
+        state.r.devices.clear();
+        state.r.devices.addAll(state.byIp.values());
+    }
+
+    /**
+     * Finds an already swept segment that fully contains {@code cidr}. Only
+     * segments that were probed to completion count: a truncated sweep leaves
+     * parts of its range unexamined, so it cannot stand in for a narrower network.
+     */
+    static NetworkSegment coveringSegment(CrawlState state, String cidr) {
+        for (NetworkSegment swept : state.swept.values()) {
+            if (swept.cidr.equals(cidr) || !fullyScanned(swept)) continue;
+            if (Cidr.contains(swept.cidr, cidr)) return swept;
+        }
+        return null;
+    }
+
+    /** Did the sweep cover every usable address of the segment? */
+    static boolean fullyScanned(NetworkSegment seg) {
+        return seg.hostsTotal > 0 && seg.hostsProbed >= seg.hostsTotal;
+    }
+
+    /**
+     * Crawls one segment. A failure is recorded as a warning instead of being
+     * propagated: one unparseable or unreachable segment must never abort the run.
+     */
+    private void crawlSegment(CrawlState state, NetworkSegment seg) {
+        state.r.segments.add(seg);
+        try {
+            Expansion expansion = null;
+            if (cfg.tcp || cfg.icmp) {
+                expansion = expand(seg.cidr, cfg.maxHostsPerSubnet);
+                seg.hostsProbed = expansion.addresses().size();
+                seg.hostsTotal = expansion.subnetSize();
+                warnIfTruncated(seg, expansion, state.r);
+            }
+            // 2a) Host discovery (parallel strategies)
+            discoverHosts(state, seg, expansion);
+            // 2b) Services + SNMP for every active device on this segment. The map is
+            // copied first because enrichment adds devices harvested from ARP tables.
+            for (Device d : List.copyOf(state.byIp.values())) {
+                if (d.ip == null || !sameCidr(d.ip, seg.cidr)) continue;
+                enrich(state, d, seg);
+            }
+        } catch (Exception e) {
+            state.r.warnings.add("segment " + seg.cidr + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Queues a candidate subnet for crawling in canonical form. Duplicates,
+     * malformed values, ranges below the minimum prefix and networks beyond the
+     * depth limit are dropped; the last two are reported so an operator can see
+     * why a discovered network was not visited.
+     */
+    void enqueue(CrawlState state, Learned learned, String source,
+                 NetworkSegment parent, String gateway) {
+        if (learned == null || learned.cidr() == null || !learned.cidr().contains("/")) return;
+        String normalized;
+        try {
+            normalized = Cidr.normalize(learned.cidr());
+        } catch (IllegalArgumentException e) {
+            state.r.warnings.add("ignored invalid segment " + learned.cidr() + " from " + source);
+            return;
+        }
+        if (Cidr.prefix(normalized) < Cidr.MIN_PREFIX) {
+            state.r.warnings.add("ignored oversized segment " + normalized + " from " + source);
+            return;
+        }
+        int depth = parent == null ? 0 : parent.depth + 1;
+        if (depth > cfg.maxDepth) {
+            String warning = "depth limit " + cfg.maxDepth + " reached: " + normalized
+                    + " from " + source + " was not crawled (raise --max-depth)";
+            if (!state.r.warnings.contains(warning)) state.r.warnings.add(warning);
+            return;
+        }
+        if (state.visited.contains(normalized) || queued(state, normalized)) return;
+        if (state.visited.size() + state.frontier.size() >= cfg.maxSubnets) return;
+        NetworkSegment segment = new NetworkSegment(normalized);
+        segment.depth = depth;
+        segment.parentCidr = parent == null ? null : parent.cidr;
+        segment.gateway = gateway;
+        segment.discoveredBy.add(source);
+        if (learned.maskAssumed()) segment.discoveredBy.add(source + "-mask-assumed");
+        state.frontier.add(segment);
+    }
+
+    private static boolean queued(CrawlState state, String cidr) {
+        for (NetworkSegment pending : state.frontier) {
+            if (pending.cidr.equals(cidr)) return true;
+        }
+        return false;
+    }
+
+    /** Default routes, loopback, link-local and multicast ranges are never crawled. */
+    static boolean isUnroutable(String cidr) {
+        return cidr.startsWith("0.0.0.0") || cidr.startsWith("127.")
+                || cidr.startsWith("169.254.") || cidr.startsWith("224.")
+                || cidr.startsWith("239.") || cidr.startsWith("255.");
+    }
+
     private static Device findOrCreate(Map<String, Device> byIp, String ip) {
         return byIp.computeIfAbsent(ip, key -> {
             Device device = new Device();
@@ -345,18 +467,23 @@ public class DiscoveryOrchestrator {
         return h;
     }
 
-    private static String toCidr(String dst) {
-        String[] parts = dst.split("\\.", -1);
-        if (parts.length != 4) return null;
-        try {
-            for (String part : parts) {
-                int octet = Integer.parseInt(part);
-                if (octet < 0 || octet > 255) return null;
-            }
-            return parts[0] + "." + parts[1] + "." + parts[2] + ".0/24";
-        } catch (NumberFormatException e) {
-            return null;
-        }
+    /**
+     * A subnet learned from an external source, and whether its prefix had to be
+     * guessed because the source did not provide a netmask.
+     */
+    record Learned(String cidr, boolean maskAssumed) {}
+
+    /**
+     * Builds a CIDR from an address and the netmask that came with it. When the
+     * mask is missing or unusable the address is assumed to be a /24 and the result
+     * is flagged, so an assumed prefix stays visible in the report instead of
+     * silently reshaping the network.
+     */
+    static Learned toCidr(String addr, String mask) {
+        String exact = Cidr.fromMask(addr, mask);
+        if (exact != null) return new Learned(exact, false);
+        if (Cidr.parseIp(addr) == null) return null;
+        return new Learned(Cidr.normalize(addr + "/24"), true);
     }
 
     private static void deduplicateVirtualization(DiscoveryResult result) {
@@ -382,30 +509,45 @@ public class DiscoveryOrchestrator {
     }
 
     private static boolean sameCidr(InetAddress ip, String cidr) {
-        try {
-            String[] p = cidr.split("/");
-            InetAddress net = InetAddress.getByName(p[0]);
-            int prefix = Integer.parseInt(p[1]);
-            int mask = prefix == 0 ? 0 : 0xFFFFFFFF << (32 - prefix);
-            return (toInt(ip) & mask) == (toInt(net) & mask);
-        } catch (Exception e) { return false; }
+        return ip != null && Cidr.contains(cidr, ip.getHostAddress() + "/32");
     }
     private static int toInt(InetAddress a) {
         byte[] b = a.getAddress();
         return ((b[0]&0xFF)<<24)|((b[1]&0xFF)<<16)|((b[2]&0xFF)<<8)|(b[3]&0xFF);
     }
 
-    private static List<InetAddress> expand(String cidr, int max) throws Exception {
-        List<InetAddress> out = new ArrayList<>();
+    /** The addresses of a segment that will actually be probed. */
+    record Expansion(List<InetAddress> addresses, long subnetSize, boolean truncated) {}
+
+    /**
+     * Expands a segment into the addresses to probe. Very large ranges are capped
+     * at {@code maxHosts} rather than rejected: a /16 is a normal enterprise subnet
+     * and must produce a bounded scan, not an abort.
+     */
+    static Expansion expand(String cidr, int maxHosts) throws Exception {
         String[] p = cidr.split("/");
         int prefix = Integer.parseInt(p[1]);
-        if (prefix < 22) throw new IllegalArgumentException("Network too large: " + cidr);
         InetAddress net = InetAddress.getByName(p[0]);
         long base = Integer.toUnsignedLong(toInt(net));
-        int size = 1 << (32 - prefix);
-        for (int i = 1; i < size - 1 && out.size() < max; i++)
+        long size = 1L << (32 - prefix);
+        long usable = Math.max(0, size - 2);   // network and broadcast are not hosts
+        List<InetAddress> out = new ArrayList<>();
+        for (long i = 1; i < size - 1 && out.size() < maxHosts; i++) {
             out.add(InetAddress.getByName(ipStr(base + i)));
-        return out;
+        }
+        return new Expansion(List.copyOf(out), usable, usable > out.size());
+    }
+
+    /**
+     * Reports a capped expansion once per segment, so the operator knows a subnet
+     * was only partially probed instead of assuming it is empty.
+     */
+    private static void warnIfTruncated(NetworkSegment seg, Expansion expansion, DiscoveryResult r) {
+        if (!expansion.truncated()) return;
+        String warning = "segment " + seg.cidr + " holds " + expansion.subnetSize()
+                + " addresses; only the first " + expansion.addresses().size()
+                + " were probed (raise --max-hosts-per-subnet)";
+        if (!r.warnings.contains(warning)) r.warnings.add(warning);
     }
     private static String ipStr(long v) {
         return ((v>>24)&0xFF)+"."+((v>>16)&0xFF)+"."+((v>>8)&0xFF)+"."+(v&0xFF);
