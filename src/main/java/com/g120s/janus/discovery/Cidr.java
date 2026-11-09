@@ -60,6 +60,16 @@ public final class Cidr {
         return toIp(value & maskOf(prefix)) + "/" + prefix;
     }
 
+    /**
+     * Usable host addresses in a CIDR, excluding network and broadcast. Returns 0
+     * for point-to-point and single-host prefixes, which have no classic host range.
+     */
+    public static long usableHosts(String cidr) {
+        long[] parsed = parse(cidr);
+        long size = 1L << (32 - parsed[1]);
+        return Math.max(0, size - 2);
+    }
+
     /** Is {@code candidate} equal to or inside {@code supernet}? */
     public static boolean contains(String supernet, String candidate) {
         long[] sup;

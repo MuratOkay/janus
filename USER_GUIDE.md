@@ -153,6 +153,9 @@ Tips when names are missing:
 | `--max-subnets` | 64 | Caps total segments crawled (protects against runaway route-table expansion). |
 | `--max-depth` | 4 | Maximum hops from a seed. A subnet discovered while crawling depth *n* becomes depth *n+1*; anything past the limit is reported, not silently dropped. |
 | `--max-hosts-per-subnet` | 1024 | Caps how many addresses are probed per segment. Raise it to cover a `/16` fully; a truncated segment is reported as a warning. |
+| `--sweep-policy` | `full` | What to probe: `full` sweeps the range (capped), `known` probes only addresses SNMP reported, `sample` probes known + a spread of the range. See §4.1. |
+| `--sample-hosts-per-subnet` | 32 | Addresses sampled across the range under `--sweep-policy sample`. |
+| `--pps` | unlimited | Caps probe starts per second. `--threads` limits concurrency; this limits rate. Lower it to protect weak switches. |
 | `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
 
 Example for a /16 split into /24s with a bigger pool:
@@ -166,6 +169,46 @@ Wide segments are no longer rejected: a `/16` is expanded up to
 `--max-hosts-per-subnet` addresses and the run reports exactly how much of it was
 covered. Prefixes below `/8` are refused outright. Sweeping a large range host by
 host is slow, so prefer letting SNMP-discovered subnets drive the crawl.
+
+### 4.1 Choosing a sweep policy
+
+Sweeping every address of a large range is rarely affordable. A `/16` holds 65534
+hosts and each one costs one connect attempt per probe port — roughly a million
+attempts for the default port list, plus the SNMP lookups afterwards. Routers and
+switches already know which addresses are in use, so asking them is faster and far
+gentler on the network.
+
+| Policy | Probes | Best for |
+| --- | --- | --- |
+| `full` (default) | Every address in the range, capped by `--max-hosts-per-subnet`. | Small or medium segments, and any segment with no SNMP data. The only policy that finds a silent host. |
+| `known` | Only addresses reported by SNMP (interface addresses and ARP caches). | Large enterprise ranges where the routers are managed. Fastest and quietest. |
+| `sample` | Known addresses, plus the segment gateway, plus `--sample-hosts-per-subnet` addresses spread across the whole range. | A first pass over a big range, or validating that `known` data looks sane. |
+
+```bash
+# Crawl a /16 quickly by trusting the routers
+java -jar target/janus-0.0.1-SNAPSHOT.jar \
+  --cidr 10.20.0.0/16 --sweep-policy known --out reports/dc-known.json
+
+# Known hosts plus a spread of 64 addresses across each range
+java -jar target/janus-0.0.1-SNAPSHOT.jar \
+  --cidr 10.20.0.0/16 --sweep-policy sample --sample-hosts-per-subnet 64 \
+  --out reports/dc-sample.json
+```
+
+Two behaviours worth knowing:
+
+- **Sampling is deterministic.** The addresses are derived from the CIDR, so two
+  runs over the same segment probe the same hosts and their results are
+  comparable. A random sample would make successive scans impossible to diff.
+- **`known` on a segment with no SNMP data probes nothing** and says so:
+  `segment 10.5.0.0/24: no SNMP host data, so nothing was probed under
+  --sweep-policy known (use sample or full)`. Admitting the gap is better than
+  reporting an empty network as if nothing were there.
+
+`--pps` is a separate limit from `--threads`. `--threads` bounds how many probes
+are in flight; `--pps` bounds how many *start* per second. 256 threads can still
+hammer a weak switch if every connect returns instantly, so pace with `--pps` when
+protecting fragile network hardware.
 
 ## 5. Virtualization inventory
 
@@ -267,6 +310,7 @@ Each segment records where it came from and how completely it was examined:
   "coveredBy": null,
   "hostsProbed": 254,
   "hostsTotal": 254,
+  "sweepPolicy": "full",
   "discoveredBy": ["snmp-route@10.0.0.1"]
 }
 ```
@@ -278,7 +322,10 @@ Each segment records where it came from and how completely it was examined:
   for a directly attached one. `null` for seeds taken from a local interface.
 - **hostsProbed / hostsTotal** — how many of the range's usable addresses were
   actually probed versus how many exist. `hostsProbed < hostsTotal` means the
-  sweep was capped by `--max-hosts-per-subnet`; a warning says the same.
+  sweep was capped by `--max-hosts-per-subnet` or deliberately reduced by
+  `--sweep-policy`; a warning says the same.
+- **sweepPolicy** — `full`, `known` or `sample`, recording how the range was
+  probed so a sparse result can be told apart from a small network.
 - **coveredBy** — set when the range was already swept as part of a wider,
   fully scanned network, so it was recorded but deliberately not re-scanned.
 - **discoveredBy** — provenance: `seed`, `local-interface`, `local-route`,

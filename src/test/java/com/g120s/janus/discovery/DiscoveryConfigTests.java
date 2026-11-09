@@ -101,6 +101,34 @@ class DiscoveryConfigTests {
     }
 
     @Test
+    void parsesSweepPolicyAndPacing() {
+        DiscoveryConfig config = DiscoveryConfig.fromArgs(new String[] {
+                "--sweep-policy", "sample",
+                "--sample-hosts-per-subnet", "16",
+                "--pps", "500"
+        });
+
+        assertEquals(SweepPolicy.SAMPLE, config.sweepPolicy);
+        assertEquals(16, config.sampleHostsPerSubnet);
+        assertEquals(500, config.probesPerSecond);
+    }
+
+    @Test
+    void sweepDefaultsAreExhaustiveAndUnpaced() {
+        DiscoveryConfig config = DiscoveryConfig.fromArgs(new String[] {});
+
+        assertEquals(SweepPolicy.FULL, config.sweepPolicy);
+        assertEquals(32, config.sampleHostsPerSubnet);
+        assertEquals(0, config.probesPerSecond, "0 means only the thread pool limits");
+    }
+
+    @Test
+    void rejectsBadSweepPolicyValue() {
+        assertThrows(IllegalArgumentException.class,
+                () -> DiscoveryConfig.fromArgs(new String[] {"--sweep-policy", "sometimes"}));
+    }
+
+    @Test
     void rejectsMalformedNetworksAndMissingOptionValues() {
         assertAll(
                 () -> assertThrows(IllegalArgumentException.class,

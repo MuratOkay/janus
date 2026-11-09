@@ -121,6 +121,23 @@ multiple strategies enrich the same device:
 - **ARP** (`L2Scanner.arpScan`) — raw-socket ARP, only on the matching local
   segment.
 
+Both TCP and ICMP probe the *target list* chosen by `hostsToProbe`, not the whole
+segment. That list depends on `SweepPolicy` (`discovery/SweepPolicy.java`):
+
+- `FULL` — `expand` the range up to `maxHostsPerSubnet`, warning when truncated.
+- `KNOWN` — only addresses in `CrawlState.knownHosts`, harvested by `collectKnown`
+  from SNMP interface and ARP tables. An empty set is reported, never silently
+  treated as an empty network.
+- `SAMPLE` — the known addresses plus the segment gateway plus
+  `sampleHostsPerSubnet` addresses drawn deterministically across the whole range
+  (seeded from the CIDR so repeat scans stay comparable).
+
+This matters because sweeping is the dominant cost: a /16 is 65534 hosts times the
+number of probe ports. Letting managed routers supply the target list is what makes
+large ranges tractable. `RateLimiter` is a separate, optional bound on probe
+*starts* per second (`--pps`), distinct from the thread pool's bound on probes in
+flight.
+
 ### Enrichment
 
 `enrich` fills a device from the strongest signals available:

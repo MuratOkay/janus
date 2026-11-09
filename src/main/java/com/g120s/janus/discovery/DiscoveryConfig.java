@@ -31,6 +31,9 @@ public final class DiscoveryConfig {
     public int maxSubnets = 64;
     public int maxDepth = 4;
     public int maxHostsPerSubnet = 1024;   // caps probing of very large ranges
+    public SweepPolicy sweepPolicy = SweepPolicy.FULL;
+    public int sampleHostsPerSubnet = 32;  // SAMPLE policy: addresses picked at random
+    public int probesPerSecond;            // 0 = no pacing, only the thread pool limits
     public int lldpDurationMs = 45_000;
     public String outputPath = "discovery-report.json";
     public int dnsTimeoutMs = 800;
@@ -71,6 +74,11 @@ public final class DiscoveryConfig {
                 case "--max-depth" -> config.maxDepth = positiveInt(value(args, ++i, option), option);
                 case "--max-hosts-per-subnet" ->
                         config.maxHostsPerSubnet = positiveInt(value(args, ++i, option), option);
+                case "--sweep-policy" ->
+                        config.sweepPolicy = SweepPolicy.parse(value(args, ++i, option), option);
+                case "--sample-hosts-per-subnet" ->
+                        config.sampleHostsPerSubnet = positiveInt(value(args, ++i, option), option);
+                case "--pps" -> config.probesPerSecond = positiveInt(value(args, ++i, option), option);
                 case "--lldp-duration" -> config.lldpDurationMs = positiveInt(value(args, ++i, option), option);
                 case "--tcp" -> config.tcp = true;
                 case "--no-tcp" -> config.tcp = false;

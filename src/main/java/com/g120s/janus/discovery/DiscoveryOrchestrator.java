@@ -10,12 +10,14 @@ import java.util.concurrent.*;
 public class DiscoveryOrchestrator {
     private final DiscoveryConfig cfg;
     private final ExecutorService pool;
+    private final RateLimiter limiter;
     private final List<Integer> probePorts = List.of(22,23,53,80,135,139,443,445,902,
             3389,5985,5986,8006,8080,8443,9440,16509);
 
     public DiscoveryOrchestrator(DiscoveryConfig cfg) {
         this.cfg = cfg;
         this.pool = Executors.newFixedThreadPool(Math.max(2, cfg.threadPool));
+        this.limiter = new RateLimiter(cfg.probesPerSecond);
     }
 
     public DiscoveryResult run() throws Exception {
@@ -116,15 +118,15 @@ public class DiscoveryOrchestrator {
         return r;
     }
 
-    private void discoverHosts(CrawlState state, NetworkSegment seg, Expansion expansion)
+    private void discoverHosts(CrawlState state, NetworkSegment seg, List<InetAddress> targets)
             throws Exception {
         Map<String, Device> byIp = state.byIp;
         DiscoveryResult r = state.r;
         // --- TCP sweep
-        if (cfg.tcp && expansion != null) {
+        if (cfg.tcp && !targets.isEmpty()) {
             Map<InetAddress, List<Integer>> scans = new LinkedHashMap<>();
-            for (InetAddress ip : expansion.addresses()) {
-                scans.put(ip, HostScanners.tcpScan(pool, ip, probePorts, cfg.tcpTimeoutMs));
+            for (InetAddress ip : targets) {
+                scans.put(ip, HostScanners.tcpScan(pool, ip, probePorts, cfg.tcpTimeoutMs, limiter));
             }
             for (var scan : scans.entrySet()) {
                 List<Integer> open = scan.getValue();
@@ -137,9 +139,9 @@ public class DiscoveryOrchestrator {
             }
         }
         // --- ICMP
-        if (cfg.icmp && expansion != null) {
-            for (InetAddress ip : expansion.addresses()) {
-                if (HostScanners.icmp(ip, 800)) {
+        if (cfg.icmp && !targets.isEmpty()) {
+            for (InetAddress ip : targets) {
+                if (HostScanners.icmp(ip, 800, limiter)) {
                     Device d = byIp.computeIfAbsent(ip.getHostAddress(), k -> new Device());
                     d.ip = ip; d.discoveredBy.add("icmp");
                 }
@@ -264,12 +266,19 @@ public class DiscoveryOrchestrator {
                         enqueue(state, learned, "snmp-route@" + d.ip.getHostAddress(),
                                 parent, s.routes().get(dst));
                     }
-                    // Collect MACs from the ARP table
+                    // Collect MACs from the ARP table, and remember every address the
+                    // device proved to exist. These become the probe targets for
+                    // --sweep-policy known/sample, which is what makes a /16 tractable.
                     for (var e : s.arpTable().entrySet()) {
                         Device tgt = findOrCreate(byIp, e.getKey());
                         if (tgt.mac == null) tgt.mac = e.getValue();
                         tgt.discoveredBy.add("snmp-arp");
+                        collectKnown(state, e.getKey());
                     }
+                    // The router's own interface addresses are live hosts too.
+                    for (String address : s.ifMasks().keySet()) collectKnown(state, address);
+                    s.ipAddresses().forEach(address -> collectKnown(state, address));
+                    collectKnown(state, d.ip.getHostAddress());
                     break; // successful community
                 } catch (Exception ex) {
                     r.warnings.add("snmp@" + d.ip.getHostAddress() + ": " + ex.getMessage());
@@ -321,6 +330,12 @@ public class DiscoveryOrchestrator {
         final Set<String> visited = new HashSet<>();
         /** Segments already swept, by CIDR, used for containment suppression. */
         final Map<String, NetworkSegment> swept = new LinkedHashMap<>();
+        /**
+         * Addresses proven to exist, harvested from SNMP interface and ARP tables.
+         * This is what makes {@link SweepPolicy#KNOWN} possible: a router already
+         * knows who is on its subnets.
+         */
+        final Set<String> knownHosts = new HashSet<>();
         final Map<String, Device> byIp = new HashMap<>();
         final DiscoveryResult r;
         int generated;
@@ -377,15 +392,15 @@ public class DiscoveryOrchestrator {
     private void crawlSegment(CrawlState state, NetworkSegment seg) {
         state.r.segments.add(seg);
         try {
-            Expansion expansion = null;
+            List<InetAddress> targets = List.of();
             if (cfg.tcp || cfg.icmp) {
-                expansion = expand(seg.cidr, cfg.maxHostsPerSubnet);
-                seg.hostsProbed = expansion.addresses().size();
-                seg.hostsTotal = expansion.subnetSize();
-                warnIfTruncated(seg, expansion, state.r);
+                targets = hostsToProbe(state, seg);
+                seg.hostsProbed = targets.size();
+                seg.hostsTotal = Cidr.usableHosts(seg.cidr);
+                seg.sweepPolicy = cfg.sweepPolicy.name().toLowerCase(java.util.Locale.ROOT);
             }
             // 2a) Host discovery (parallel strategies)
-            discoverHosts(state, seg, expansion);
+            discoverHosts(state, seg, targets);
             // 2b) Services + SNMP for every active device on this segment. The map is
             // copied first because enrichment adds devices harvested from ARP tables.
             for (Device d : List.copyOf(state.byIp.values())) {
@@ -542,12 +557,110 @@ public class DiscoveryOrchestrator {
      * Reports a capped expansion once per segment, so the operator knows a subnet
      * was only partially probed instead of assuming it is empty.
      */
+    /**
+     * Chooses which addresses of a segment to probe. Under {@code FULL} this is the
+     * whole range (capped); under {@code KNOWN} only addresses a router reported;
+     * under {@code SAMPLE} the known ones plus a deterministic sample spanning the
+     * range, so a large subnet is characterised without being swept.
+     */
+    List<InetAddress> hostsToProbe(CrawlState state, NetworkSegment seg) throws Exception {
+        if (cfg.sweepPolicy == SweepPolicy.FULL) {
+            Expansion full = expand(seg.cidr, cfg.maxHostsPerSubnet);
+            warnIfTruncated(seg, full, state.r);
+            return full.addresses();
+        }
+
+        List<InetAddress> known = knownHostsIn(state, seg);
+        if (cfg.sweepPolicy == SweepPolicy.KNOWN) {
+            if (known.isEmpty()) {
+                addWarningOnce(state.r, "segment " + seg.cidr
+                        + ": no SNMP host data, so nothing was probed under"
+                        + " --sweep-policy known (use sample or full)");
+            } else if (known.size() > cfg.maxHostsPerSubnet) {
+                addWarningOnce(state.r, "segment " + seg.cidr + ": " + known.size()
+                        + " known hosts, probing the first " + cfg.maxHostsPerSubnet
+                        + " (raise --max-hosts-per-subnet)");
+                known = known.subList(0, cfg.maxHostsPerSubnet);
+            }
+            return List.copyOf(known);
+        }
+
+        // SAMPLE: everything known, plus the gateway hop, plus a spread of the range.
+        LinkedHashSet<String> addresses = new LinkedHashSet<>();
+        known.forEach(ip -> addresses.add(ip.getHostAddress()));
+        if (seg.gateway != null && Cidr.contains(seg.cidr, seg.gateway + "/32")) {
+            addresses.add(seg.gateway);
+        }
+        for (InetAddress sampled : sampleAddresses(seg.cidr, cfg.sampleHostsPerSubnet)) {
+            addresses.add(sampled.getHostAddress());
+        }
+        List<InetAddress> targets = new ArrayList<>();
+        for (String address : addresses) {
+            if (targets.size() >= cfg.maxHostsPerSubnet) break;
+            targets.add(InetAddress.getByName(address));
+        }
+        return targets;
+    }
+
+    /** Addresses harvested from SNMP tables that fall inside {@code seg}. */
+    private static List<InetAddress> knownHostsIn(CrawlState state, NetworkSegment seg) throws Exception {
+        List<Long> values = new ArrayList<>();
+        for (String ip : state.knownHosts) {
+            Long value = Cidr.parseIp(ip);
+            if (value == null || !Cidr.contains(seg.cidr, ip + "/32")) continue;
+            values.add(value);
+        }
+        Collections.sort(values);
+        List<InetAddress> out = new ArrayList<>(values.size());
+        for (long value : values) out.add(InetAddress.getByName(Cidr.toIp(value)));
+        return out;
+    }
+
+    /**
+     * Picks {@code count} distinct addresses from across the whole range. The seed is
+     * derived from the CIDR so repeated runs sample the same hosts and results stay
+     * comparable between scans.
+     */
+    static List<InetAddress> sampleAddresses(String cidr, int count) throws Exception {
+        String[] parts = cidr.split("/");
+        int prefix = Integer.parseInt(parts[1]);
+        Long network = Cidr.parseIp(parts[0]);
+        if (network == null) return List.of();
+        long usable = (1L << (32 - prefix)) - 2;
+        if (usable <= 0 || count <= 0) return List.of();
+        int want = (int) Math.min(count, usable);
+        Random random = new Random(cidr.hashCode());
+        Set<Long> offsets = new HashSet<>();
+        for (int guard = 0; offsets.size() < want && guard < want * 20; guard++) {
+            long offset = 1 + (long) (random.nextDouble() * usable);
+            offsets.add(Math.max(1, Math.min(usable, offset)));
+        }
+        List<Long> sorted = new ArrayList<>(offsets);
+        Collections.sort(sorted);
+        List<InetAddress> out = new ArrayList<>(sorted.size());
+        for (long offset : sorted) out.add(InetAddress.getByName(ipStr(network + offset)));
+        return out;
+    }
+
+    private static void addWarningOnce(DiscoveryResult r, String warning) {
+        if (!r.warnings.contains(warning)) r.warnings.add(warning);
+    }
+
+    /** Records a live address reported by a device, ignoring anything malformed. */
+    static void collectKnown(CrawlState state, String address) {
+        if (address == null) return;
+        Long value = Cidr.parseIp(address);
+        if (value == null) return;
+        String canonical = Cidr.toIp(value);
+        if (canonical.equals("0.0.0.0")) return;
+        state.knownHosts.add(canonical);
+    }
+
     private static void warnIfTruncated(NetworkSegment seg, Expansion expansion, DiscoveryResult r) {
         if (!expansion.truncated()) return;
-        String warning = "segment " + seg.cidr + " holds " + expansion.subnetSize()
+        addWarningOnce(r, "segment " + seg.cidr + " holds " + expansion.subnetSize()
                 + " addresses; only the first " + expansion.addresses().size()
-                + " were probed (raise --max-hosts-per-subnet)";
-        if (!r.warnings.contains(warning)) r.warnings.add(warning);
+                + " were probed (raise --max-hosts-per-subnet)");
     }
     private static String ipStr(long v) {
         return ((v>>24)&0xFF)+"."+((v>>16)&0xFF)+"."+((v>>8)&0xFF)+"."+(v&0xFF);
