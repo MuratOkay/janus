@@ -81,6 +81,96 @@ class ProgressTests {
     }
 
     @Test
+    void scanningANetworkThisHostIsNotOnIsReported() throws Exception {
+        // The failure this guards against: pointing Janus at a range the machine is
+        // not attached to used to yield a long silent scan and "0 devices" with an
+        // empty warning list, which reads exactly like a genuinely empty network.
+        DiscoveryConfig config = new DiscoveryConfig();
+        config.tcp = false;
+        config.icmp = false;
+        config.arp = false;
+        config.mdns = false;
+        config.ssdp = false;
+        config.netbios = false;
+        config.snmp = false;
+        config.lldp = false;
+        config.dns = false;
+        config.tlsNames = false;
+        config.seedCidrs.add("203.0.113.0/24");   // TEST-NET-3, never local
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(config);
+        DiscoveryOrchestrator.CrawlState state =
+                new DiscoveryOrchestrator.CrawlState(new com.g120s.janus.model.DiscoveryResult());
+
+        state.frontier.add(new NetworkSegment("203.0.113.0/24"));
+        orchestrator.warnAboutUnreachableSeeds(state);
+
+        assertTrue(state.r.warnings.stream()
+                        .anyMatch(w -> w.contains("not on any local interface")),
+                state.r.warnings.toString());
+    }
+
+    @Test
+    void localSegmentsDoNotTriggerTheWarning() throws Exception {
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(new DiscoveryConfig());
+        DiscoveryOrchestrator.CrawlState state =
+                new DiscoveryOrchestrator.CrawlState(new com.g120s.janus.model.DiscoveryResult());
+
+        List<String> locals = DiscoveryOrchestrator.localCidrs();
+        for (String local : locals) {
+            state.frontier.add(new NetworkSegment(local));
+        }
+        orchestrator.warnAboutUnreachableSeeds(state);
+
+        assertTrue(state.r.warnings.stream().noneMatch(w -> w.contains("not on any local interface")),
+                "the host's own networks must never be reported as unreachable");
+        for (String local : locals) {
+            assertTrue(DiscoveryOrchestrator.isOnLocalSegment(local), local + " should be local");
+        }
+    }
+
+    @Test
+    void emptiedSegmentExplainsItself() throws Exception {
+        // Probes run but nothing answers: the report must say so rather than implying
+        // the subnet is empty. TEST-NET-1 is unroutable, so this stays offline.
+        DiscoveryConfig config = new DiscoveryConfig();
+        config.icmp = false;
+        config.arp = false;
+        config.mdns = false;
+        config.ssdp = false;
+        config.netbios = false;
+        config.snmp = false;
+        config.lldp = false;
+        config.dns = false;
+        config.tlsNames = false;
+        config.tcp = true;
+        config.tcpTimeoutMs = 1;
+        config.maxHostsPerSubnet = 2;
+        config.seedCidrs.add("198.51.100.0/30");
+
+        com.g120s.janus.model.DiscoveryResult result = new DiscoveryOrchestrator(config).run();
+
+        assertTrue(result.warnings.stream().anyMatch(w -> w.contains("no host answered any of")),
+                result.warnings.toString());
+    }
+
+    @Test
+    void aSubnetOfTheLocalInterfaceIsStillOnLink() {
+        // The bug: ARP required an exact CIDR match, so scanning 192.168.68.0/24 from
+        // an interface holding 192.168.68.0/22 skipped ARP for a scannable range.
+        assertTrue(DiscoveryOrchestrator.isOnLink("192.168.68.0/22", "192.168.68.0/24"));
+        assertTrue(DiscoveryOrchestrator.isOnLink("192.168.68.0/22", "192.168.68.0/22"));
+        assertTrue(DiscoveryOrchestrator.isOnLink("192.168.68.5/22", "192.168.68.0/24"),
+                "host bits in the interface CIDR must not defeat the match");
+    }
+
+    @Test
+    void aWiderRangeThanTheInterfaceIsNotOnLink() {
+        // A /16 enclosing the interface's /24 spans networks this link cannot ARP.
+        assertFalse(DiscoveryOrchestrator.isOnLink("192.168.68.0/24", "192.168.0.0/16"));
+        assertFalse(DiscoveryOrchestrator.isOnLink("192.168.68.0/22", "192.168.72.0/24"));
+    }
+
+    @Test
     void progressModeIsParsedAndQuietIsAnAliasForNone() {
         assertEquals(ProgressMode.PLAIN,
                 DiscoveryConfig.fromArgs(new String[] {"--progress", "plain"}).progress);

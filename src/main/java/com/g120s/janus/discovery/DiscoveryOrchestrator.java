@@ -33,6 +33,7 @@ public class DiscoveryOrchestrator {
     public DiscoveryResult run() throws Exception {
         DiscoveryResult r = new DiscoveryResult();
         r.startedAt = System.currentTimeMillis();
+        progress.start(cfg, cfg.seedCidrs.isEmpty() ? localCidrs() : cfg.seedCidrs);
 
         List<Future<List<NeighborRecord>>> sniffFutures = new ArrayList<>();
         if (cfg.lldp) {
@@ -67,9 +68,9 @@ public class DiscoveryOrchestrator {
             }
         }
 
-        progress.start(cfg, cfg.seedCidrs.isEmpty() ? localCidrs() : cfg.seedCidrs);
         progress.phase(state.frontier.size() + " segment(s) queued from "
                 + (cfg.seedCidrs.isEmpty() ? "local interfaces and routes" : "--cidr"));
+        warnAboutUnreachableSeeds(state);
 
         // 2) BFS
         drain(state);
@@ -208,9 +209,11 @@ public class DiscoveryOrchestrator {
             try {
                 for (String ifName : localIfaces()) {
                     String local = localCidr(ifName);
-                    // Compare canonical forms: a seed such as 192.168.68.5/22 must
-                    // still match the interface's 192.168.68.0/22.
-                    if (local == null || !Cidr.normalize(local).equals(seg.cidr)) continue;
+                    // On-link means equal to or inside the interface's network, so a
+                    // scan of 192.168.68.0/24 still ARPs when the interface holds
+                    // 192.168.68.0/22. Requiring an exact match silently skipped ARP
+                    // for perfectly scannable ranges.
+                    if (local == null || !isOnLink(local, seg.cidr)) continue;
                     for (L2Scanner.ArpEntry e : L2Scanner.arpScan(ifName, seg.cidr, 3000)) {
                         Device d = byIp.computeIfAbsent(e.ip(), k -> new Device());
                         d.ip = InetAddress.getByName(e.ip());
@@ -439,8 +442,16 @@ public class DiscoveryOrchestrator {
             state.r.warnings.add("segment " + seg.cidr + ": " + e.getMessage());
             progress.note("segment " + seg.cidr + " failed: " + e.getMessage());
         } finally {
-            progress.segmentDone(seg, (System.nanoTime() - startedAt) / 1_000_000,
-                    countDevicesIn(state, seg.cidr));
+            int found = countDevicesIn(state, seg.cidr);
+            progress.segmentDone(seg, (System.nanoTime() - startedAt) / 1_000_000, found);
+            // A swept range that yields nothing is far more often a reachability
+            // problem than a truly empty subnet, and silence here is indistinguishable
+            // from success. Say so, with the numbers that make it diagnosable.
+            if (found == 0 && seg.hostsProbed > 0) {
+                addWarningOnce(state.r, "segment " + seg.cidr + ": no host answered any of "
+                        + seg.hostsProbed + " probes; check that this network is reachable"
+                        + " from this machine");
+            }
         }
     }
 
@@ -464,6 +475,52 @@ public class DiscoveryOrchestrator {
             if (!next.compareAndSet(gate, now + intervalNanos)) return;
             progress.segmentProgress(seg, stage, done, total, countDevicesIn(state, seg.cidr));
         };
+    }
+
+    /**
+     * Warns when a seed cannot possibly be scanned from this host.
+     *
+     * <p>Without this, pointing Janus at a network the machine is not attached to
+     * produces a long, silent scan and a report of "0 devices" with an empty warning
+     * list — indistinguishable from a genuinely empty network. ARP in particular can
+     * only run on a directly attached segment, so a remote range can never find the
+     * MAC-only devices that make up most of a LAN.
+     */
+    void warnAboutUnreachableSeeds(CrawlState state) {
+        for (NetworkSegment segment : state.frontier) {
+            if (isOnLocalSegment(segment.cidr)) continue;
+            addWarningOnce(state.r, "segment " + segment.cidr
+                    + " is not on any local interface; ARP and LLDP cannot see it and"
+                    + " only routed probes (ICMP/TCP/SNMP) can reach it");
+        }
+    }
+
+    /**
+     * Is {@code cidr} equal to or inside the interface network {@code local}? Both are
+     * canonicalized first, so a seed carrying host bits still matches.
+     */
+    static boolean isOnLink(String local, String cidr) {
+        try {
+            String normalizedLocal = Cidr.normalize(local);
+            String normalizedCidr = Cidr.normalize(cidr);
+            return normalizedLocal.equals(normalizedCidr)
+                    || Cidr.contains(normalizedLocal, normalizedCidr);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /** Is this range reachable on-link from one of this host's own interfaces? */
+    static boolean isOnLocalSegment(String cidr) {
+        try {
+            for (String local : localCidrs()) {
+                if (isOnLink(local, cidr)) return true;
+            }
+        } catch (Exception ignored) {
+            // No interfaces readable: treat as local so no spurious warning is raised.
+            return true;
+        }
+        return false;
     }
 
     /** How many known devices sit inside a segment; used for the completion line. */
@@ -856,7 +913,7 @@ public class DiscoveryOrchestrator {
             }
         return null;
     }
-    private static List<String> localCidrs() throws Exception {
+    static List<String> localCidrs() throws Exception {
         List<String> out = new ArrayList<>();
         for (String n : localIfaces()) {
             String c = localCidr(n);

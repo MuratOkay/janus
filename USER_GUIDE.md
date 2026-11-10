@@ -459,6 +459,18 @@ Point it at a different report or directory with
 
 ## 9. Troubleshooting
 
+- **Zero devices, and the report warns that the segment "is not on any local
+  interface".** The range you asked for is not the network this machine is attached
+  to. ARP and LLDP/CDP only work on-link, so a remote range can only be reached by
+  routed probes (ICMP/TCP/SNMP), and any host that blocks those stays invisible.
+  Check with `ip -brief -4 addr` and scan the network you are actually on, or join
+  the target network first. Scanning an unrelated range still takes as long as a
+  real scan, because every probe has to time out.
+- **Zero devices with "no host answered any of N probes".** The probes ran and
+  nothing responded. Either the range really is empty, or a firewall is dropping
+  everything, or the devices ignore ICMP and have no open probe ports. Try
+  `--sweep-policy full` with a higher `--threads`, and check reachability with a
+  single `ping`.
 - **No devices at all.** Confirm the CIDR is reachable, or that the range was not
   reduced by `--sweep-policy known` without SNMP data. Try disabling raw-socket
   strategies to isolate, then re-enable with privileges.
