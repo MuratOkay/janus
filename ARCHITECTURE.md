@@ -64,6 +64,19 @@ hands the model to either the CLI serializer or the Spring web layer.
 `Credential` is a small mutable class (not a record) so follow-up flags like
 `--hyperv-user` / `--vcenter-pass` can attach to the most recent host credential.
 
+### Native access
+
+The build sets `Enable-Native-Access: ALL-UNNAMED` in the jar manifest
+(`maven-jar-plugin`). JNA reaches libpcap through `System.load`, a restricted method
+since JDK 24; JEP 472 makes that an error in a future release rather than a warning,
+so the grant is declared rather than left to a command-line flag a user may forget.
+Spring Boot's repackage step preserves the attribute, which was verified on the
+built jar. JNA sits on the classpath, hence the unnamed module.
+
+This covers `java -jar` only. A classpath launch has no manifest to read and needs
+`--enable-native-access=ALL-UNNAMED` supplied explicitly. The tests do not trigger
+native loading, so they are unaffected either way.
+
 ## 4. Orchestration
 
 `DiscoveryOrchestrator.run()` is a breadth-first crawl:

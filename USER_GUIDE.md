@@ -39,6 +39,35 @@ Running with no arguments prints the usage text.
   Without raw-socket access Janus still runs; the affected strategies produce a
   warning in the report and are simply skipped.
 
+### Native access and the JNA warning
+
+JNA loads `libpcap` through `System.load`, which the JVM has treated as a
+restricted method since JDK 24. Without explicit permission you get this four-line
+warning on every run, and JDK releases after 25 are expected to refuse the call
+outright rather than warn:
+
+```
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by com.sun.jna.Native ...
+```
+
+The packaged jar declares the permission in its manifest
+(`Enable-Native-Access: ALL-UNNAMED`), so **`java -jar` needs no extra flag** and
+the warning does not appear.
+
+This applies only to a jar launch. If you run from the classpath instead
+(`java -cp target/classes:... com.g120s.janus.Main`) there is no manifest to read
+and the warning returns; pass the flag yourself:
+
+```bash
+java --enable-native-access=ALL-UNNAMED -cp target/classes:... com.g120s.janus.Main
+```
+
+The grant is safe to give: Janus is a network scanner that legitimately needs
+libpcap for ARP and LLDP/CDP capture. Without the permission Janus still runs, but
+those two strategies degrade to the warnings described above — which is also what
+happens without `CAP_NET_RAW`.
+
 ## 2. Your first discovery
 
 ```bash

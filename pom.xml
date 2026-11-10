@@ -101,6 +101,25 @@
 
 	<build>
 		<plugins>
+			<!--
+				JNA loads libpcap through System.load, a restricted method since JDK 24.
+				Without explicit permission the JVM prints a four line warning on every
+				run and, per JEP 472, will eventually refuse the call outright. Declaring
+				the grant in the manifest means `java -jar` carries it automatically, so
+				users do not have to remember a JVM flag. JNA lives on the classpath, so
+				the unnamed module is the right target.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<configuration>
+					<archive>
+						<manifestEntries>
+							<Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+						</manifestEntries>
+					</archive>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
