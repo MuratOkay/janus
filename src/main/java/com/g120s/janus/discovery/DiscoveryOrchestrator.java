@@ -488,7 +488,42 @@ public class DiscoveryOrchestrator {
             addWarningOnce(state.r, "segment " + segment.cidr
                     + " is not on any local interface; ARP and LLDP cannot see it and"
                     + " only routed probes (ICMP/TCP/SNMP) can reach it");
+            if (!preflightReachable(segment.cidr)) {
+                // Nothing answered, so say why that is likely rather than letting the
+                // sweep grind through timeouts. A consumer mesh node in router mode
+                // NATs its LAN: the subnet exists, is healthy, and is still invisible
+                // to anything on the far side of that NAT.
+                addWarningOnce(state.r, "segment " + segment.cidr
+                        + " did not answer a preliminary probe; if it sits behind a NAT"
+                        + " gateway in router mode it cannot be reached from here —"
+                        + " use bridge/AP mode on that gateway, add a static route with"
+                        + " NAT disabled, or scan from a host inside the network");
+            }
         }
+    }
+
+    /**
+     * Probes a few representative addresses of a range to see whether anything is
+     * reachable at all. Deliberately cheap: this runs once per off-link segment and
+     * only decides which warning to print, never whether to scan.
+     *
+     * <p>A silent result is inconclusive on its own — hosts may block ICMP — so
+     * callers must treat it as a hint, not proof.
+     */
+    boolean preflightReachable(String cidr) {
+        try {
+            Expansion expansion = expand(cidr, 3);
+            for (InetAddress candidate : expansion.addresses()) {
+                for (int port : new int[]{80, 443, 22}) {
+                    if (HostScanners.tcpProbe(candidate, port, 400)) return true;
+                }
+                if (HostScanners.icmp(candidate, 400, null)) return true;
+            }
+        } catch (Exception e) {
+            // Cannot tell: assume reachable so no misleading warning is printed.
+            return true;
+        }
+        return false;
     }
 
     /**

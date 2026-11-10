@@ -459,6 +459,34 @@ Point it at a different report or directory with
 
 ## 9. Troubleshooting
 
+- **A second subnet exists but Janus reports it unreachable, behind a NAT
+  gateway.** A router or mesh node in *router* mode NATs its LAN: the subnet is
+  real and healthy, but nothing on the far side of that NAT can address it. This is
+  not a scanner limitation — ping and every other tool see the same wall. The report
+  says so explicitly:
+
+  ```
+  - segment 192.168.68.0/22 is not on any local interface; ARP and LLDP cannot
+    see it and only routed probes (ICMP/TCP/SNMP) can reach it
+  - segment 192.168.68.0/22 did not answer a preliminary probe; if it sits behind
+    a NAT gateway in router mode it cannot be reached from here
+  ```
+
+  Three ways to make that network discoverable:
+
+  1. **Switch the gateway to bridge/AP mode.** Every device ends up on one subnet
+     and a single scan covers the whole LAN. This is the usual fix for a mesh
+     system, and the only one that needs no routing knowledge.
+  2. **Route with NAT disabled.** Put the inner network on a different subnet, add
+     a static route on the outer router pointing at the inner gateway, and turn NAT
+     off on that gateway. Most consumer mesh units do not expose this.
+  3. **Scan from inside.** Run Janus on a host attached to the inner network, then
+     merge the reports in the web UI's report dropdown.
+
+  If the gateway answers SNMP, none of this is needed: Janus reads its interface
+  table and finds the inner subnet automatically. Most consumer mesh hardware ships
+  with SNMP disabled or absent, which is why it often is not an option.
+
 - **Zero devices, and the report warns that the segment "is not on any local
   interface".** The range you asked for is not the network this machine is attached
   to. ARP and LLDP/CDP only work on-link, so a remote range can only be reached by

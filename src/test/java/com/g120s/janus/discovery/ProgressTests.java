@@ -221,6 +221,62 @@ class ProgressTests {
     }
 
     @Test
+    void preflightReportsAnUnreachableRange() {
+        // TEST-NET-2 is never routable, so this is deterministic and offline.
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(new DiscoveryConfig());
+
+        assertFalse(orchestrator.preflightReachable("198.51.100.0/30"),
+                "an unroutable range must not look reachable");
+    }
+
+    @Test
+    void anUnreachableOffLinkSeedExplainsNatInTheReport() throws Exception {
+        // The real-world case: a mesh node in router mode NATs its LAN, so the subnet
+        // exists and is healthy yet is invisible from the far side. The scan used to
+        // grind through ten minutes of timeouts and report nothing.
+        DiscoveryConfig config = new DiscoveryConfig();
+        config.tcp = false;
+        config.icmp = false;
+        config.arp = false;
+        config.mdns = false;
+        config.ssdp = false;
+        config.netbios = false;
+        config.snmp = false;
+        config.lldp = false;
+        config.dns = false;
+        config.tlsNames = false;
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(config);
+        DiscoveryOrchestrator.CrawlState state =
+                new DiscoveryOrchestrator.CrawlState(new DiscoveryResult());
+        state.frontier.add(new NetworkSegment("198.51.100.0/30"));
+
+        orchestrator.warnAboutUnreachableSeeds(state);
+
+        assertTrue(state.r.warnings.stream().anyMatch(w -> w.contains("NAT gateway in router mode")),
+                state.r.warnings.toString());
+        assertTrue(state.r.warnings.stream().anyMatch(w -> w.contains("bridge/AP mode")),
+                "the report should name the fix, not just the symptom");
+    }
+
+    @Test
+    void anOnLinkSegmentIsNeverPreflighted() throws Exception {
+        // The check costs ~400 ms per address, so it must not run for networks this
+        // host is attached to.
+        DiscoveryConfig config = new DiscoveryConfig();
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(config);
+        DiscoveryOrchestrator.CrawlState state =
+                new DiscoveryOrchestrator.CrawlState(new DiscoveryResult());
+        for (String local : DiscoveryOrchestrator.localCidrs()) {
+            state.frontier.add(new NetworkSegment(local));
+        }
+
+        orchestrator.warnAboutUnreachableSeeds(state);
+
+        assertTrue(state.r.warnings.isEmpty(),
+                "local networks are reachable by definition: " + state.r.warnings);
+    }
+
+    @Test
     void progressModeIsParsedAndQuietIsAnAliasForNone() {
         assertEquals(ProgressMode.PLAIN,
                 DiscoveryConfig.fromArgs(new String[] {"--progress", "plain"}).progress);
