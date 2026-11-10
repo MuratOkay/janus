@@ -36,6 +36,8 @@ public final class DiscoveryConfig {
     public SweepPolicy sweepPolicy = SweepPolicy.FULL;
     public int sampleHostsPerSubnet = 32;  // SAMPLE policy: addresses picked at random
     public int probesPerSecond;            // 0 = no pacing, only the thread pool limits
+    public ProgressMode progress = ProgressMode.AUTO;
+    public boolean verbose;                // raise library logging to DEBUG
     public int lldpDurationMs = 45_000;
     public String outputPath = "discovery-report.json";
     public int dnsTimeoutMs = 800;
@@ -82,6 +84,9 @@ public final class DiscoveryConfig {
                 case "--sample-hosts-per-subnet" ->
                         config.sampleHostsPerSubnet = positiveInt(value(args, ++i, option), option);
                 case "--pps" -> config.probesPerSecond = positiveInt(value(args, ++i, option), option);
+                case "--progress" -> config.progress = ProgressMode.parse(value(args, ++i, option), option);
+                case "--quiet" -> config.progress = ProgressMode.NONE;
+                case "--verbose" -> config.verbose = true;
                 case "--lldp-duration" -> config.lldpDurationMs = positiveInt(value(args, ++i, option), option);
                 case "--tcp" -> config.tcp = true;
                 case "--no-tcp" -> config.tcp = false;

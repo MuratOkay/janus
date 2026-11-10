@@ -9,14 +9,24 @@ import java.util.concurrent.*;
 
 public class DiscoveryOrchestrator {
     private final DiscoveryConfig cfg;
-    private final ExecutorService pool;
+    private final ProbeExecutor pool;
+    private final Progress progress;
     private final RateLimiter limiter;
     private final List<Integer> probePorts = List.of(22,23,53,80,135,139,443,445,902,
             3389,5985,5986,8006,8080,8443,9440,16509);
 
     public DiscoveryOrchestrator(DiscoveryConfig cfg) {
+        this(cfg, Progress.NONE);
+    }
+
+    /**
+     * @param progress receives user-facing status; pass {@link Progress#NONE} to
+     *                 keep a scan silent, as tests and the web path do
+     */
+    public DiscoveryOrchestrator(DiscoveryConfig cfg, Progress progress) {
         this.cfg = cfg;
-        this.pool = Executors.newFixedThreadPool(Math.max(2, cfg.threadPool));
+        this.progress = progress == null ? Progress.NONE : progress;
+        this.pool = new ProbeExecutor(Math.max(2, cfg.threadPool));
         this.limiter = new RateLimiter(cfg.probesPerSecond);
     }
 
@@ -26,7 +36,12 @@ public class DiscoveryOrchestrator {
 
         List<Future<List<NeighborRecord>>> sniffFutures = new ArrayList<>();
         if (cfg.lldp) {
-            for (String iface : localIfaces()) {
+            List<String> interfaces = localIfaces();
+            // Announced before the capture starts: the LLDP window is tens of seconds
+            // of otherwise unexplained silence at the very beginning of a scan.
+            progress.phase("capturing LLDP/CDP for " + cfg.lldpDurationMs + " ms on "
+                    + String.join(", ", interfaces) + " (in background)");
+            for (String iface : interfaces) {
                 sniffFutures.add(pool.submit(() -> NeighborSniffer.capture(
                         new NeighborSniffer.CaptureOptions(iface, cfg.lldpDurationMs))));
             }
@@ -40,6 +55,10 @@ public class DiscoveryOrchestrator {
                 enqueue(state, new Learned(cidr, false), "local-interface", null, null);
             }
             for (LocalRoutes.Route route : LocalRoutes.read()) {
+                // A host routing table contains loopback, link-local and multicast
+                // routes that are not LANs. Crawling 127.0.0.0/8 also "discovers"
+                // every address asked about, because the loopback answers anything.
+                if (isUnroutable(route.cidr())) continue;
                 enqueue(state, new Learned(route.cidr(), false), "local-route", null, route.gateway());
             }
         } else {
@@ -48,10 +67,15 @@ public class DiscoveryOrchestrator {
             }
         }
 
+        progress.start(cfg, cfg.seedCidrs.isEmpty() ? localCidrs() : cfg.seedCidrs);
+        progress.phase(state.frontier.size() + " segment(s) queued from "
+                + (cfg.seedCidrs.isEmpty() ? "local interfaces and routes" : "--cidr"));
+
         // 2) BFS
         drain(state);
 
         // 3) Virtualization APIs (using the supplied credentials)
+        if (!cfg.vmCreds.isEmpty()) progress.phase("querying hypervisor APIs");
         for (DiscoveryConfig.Credential c : cfg.vmCreds) {
             try {
                 List<VirtualizationHost> found = switch (c.kind) {
@@ -122,12 +146,11 @@ public class DiscoveryOrchestrator {
             throws Exception {
         Map<String, Device> byIp = state.byIp;
         DiscoveryResult r = state.r;
-        // --- TCP sweep
+        // --- TCP sweep (all hosts in parallel; the executor caps concurrency)
         if (cfg.tcp && !targets.isEmpty()) {
-            Map<InetAddress, List<Integer>> scans = new LinkedHashMap<>();
-            for (InetAddress ip : targets) {
-                scans.put(ip, HostScanners.tcpScan(pool, ip, probePorts, cfg.tcpTimeoutMs, limiter));
-            }
+            java.util.function.IntConsumer tick = probeTicker(state, seg, "tcp", targets.size());
+            Map<InetAddress, List<Integer>> scans =
+                    HostScanners.tcpSweep(pool, targets, probePorts, cfg.tcpTimeoutMs, limiter, tick);
             for (var scan : scans.entrySet()) {
                 List<Integer> open = scan.getValue();
                 if (!open.isEmpty()) {
@@ -140,11 +163,10 @@ public class DiscoveryOrchestrator {
         }
         // --- ICMP
         if (cfg.icmp && !targets.isEmpty()) {
-            for (InetAddress ip : targets) {
-                if (HostScanners.icmp(ip, 800, limiter)) {
-                    Device d = byIp.computeIfAbsent(ip.getHostAddress(), k -> new Device());
-                    d.ip = ip; d.discoveredBy.add("icmp");
-                }
+            java.util.function.IntConsumer tick = probeTicker(state, seg, "icmp", targets.size());
+            for (InetAddress ip : HostScanners.icmpSweep(pool, targets, 800, limiter, tick)) {
+                Device d = byIp.computeIfAbsent(ip.getHostAddress(), k -> new Device());
+                d.ip = ip; d.discoveredBy.add("icmp");
             }
         }
         // --- Multicast discovery (once, for the whole segment)
@@ -361,6 +383,7 @@ public class DiscoveryOrchestrator {
                 // inventory must stay complete even when a sweep is skipped.
                 seg.coveredBy = covering.cidr;
                 state.r.segments.add(seg);
+                progress.note("skipped " + seg.cidr + " (already covered by " + covering.cidr + ")");
                 continue;
             }
             state.swept.put(seg.cidr, seg);
@@ -394,6 +417,7 @@ public class DiscoveryOrchestrator {
      */
     private void crawlSegment(CrawlState state, NetworkSegment seg) {
         state.r.segments.add(seg);
+        long startedAt = System.nanoTime();
         try {
             List<InetAddress> targets = List.of();
             if (cfg.tcp || cfg.icmp) {
@@ -402,6 +426,7 @@ public class DiscoveryOrchestrator {
                 seg.hostsTotal = Cidr.usableHosts(seg.cidr);
                 seg.sweepPolicy = cfg.sweepPolicy.name().toLowerCase(java.util.Locale.ROOT);
             }
+            progress.segmentStart(seg, state.generated, state.frontier.size(), targets.size());
             // 2a) Host discovery (parallel strategies)
             discoverHosts(state, seg, targets);
             // 2b) Services + SNMP for every active device on this segment. The map is
@@ -412,7 +437,42 @@ public class DiscoveryOrchestrator {
             }
         } catch (Exception e) {
             state.r.warnings.add("segment " + seg.cidr + ": " + e.getMessage());
+            progress.note("segment " + seg.cidr + " failed: " + e.getMessage());
+        } finally {
+            progress.segmentDone(seg, (System.nanoTime() - startedAt) / 1_000_000,
+                    countDevicesIn(state, seg.cidr));
         }
+    }
+
+    /**
+     * Builds the progress callback for a sweep. Callbacks arrive from many worker
+     * threads at once, so the throttle is a compare-and-set on an atomic timestamp
+     * rather than a plain field: without it, concurrent callbacks would both pass
+     * the check and produce interleaved, out-of-order output. Repaints are limited
+     * because the callback fires once per probe and a /16 is over a million probes.
+     */
+    private java.util.function.IntConsumer probeTicker(CrawlState state, NetworkSegment seg,
+                                                       String stage, int total) {
+        if (progress == Progress.NONE || total == 0) return null;
+        long intervalNanos = 250_000_000L;
+        java.util.concurrent.atomic.AtomicLong next =
+                new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
+        return done -> {
+            long now = System.nanoTime();
+            long gate = next.get();
+            if (now < gate) return;
+            if (!next.compareAndSet(gate, now + intervalNanos)) return;
+            progress.segmentProgress(seg, stage, done, total, countDevicesIn(state, seg.cidr));
+        };
+    }
+
+    /** How many known devices sit inside a segment; used for the completion line. */
+    static int countDevicesIn(CrawlState state, String cidr) {
+        int count = 0;
+        for (Device device : state.byIp.values()) {
+            if (device.ip != null && sameCidr(device.ip, cidr)) count++;
+        }
+        return count;
     }
 
     /**

@@ -275,7 +275,55 @@ Using one decoder everywhere would silently attach every row to the wrong key.
 IP subnet maps to, so any value there would be a guess. VLAN membership is
 recorded where it is observed — per host MAC.
 
-## 8. Web layer
+## 8. Progress reporting
+
+`Progress` (`discovery/Progress.java`) is an observer the orchestrator calls while it
+works: phases, per-segment start/progress/done, and standalone notes. It is not
+slf4j, deliberately:
+
+- progress needs in-place redrawing, elapsed time and an on/off switch, none of
+  which belong in a logging framework;
+- diagnostics and user status must be tunable independently — silencing the pcap4j
+  chatter should not also silence the scan's own progress.
+
+Every method has a no-op default and {@link Progress#NONE} is the default wiring, so
+`DiscoveryOrchestrator(cfg)` behaves exactly as before and only
+`DiscoveryOrchestrator(cfg, progress)` produces output. `ConsoleProgress` implements
+it for the CLI, choosing in-place redraw only when `System.console() != null`.
+
+Three details are load-bearing:
+
+- **Throttling lives in the orchestrator**, not the renderer: the callback fires once
+  per probe and a /16 is over a million probes.
+- **The throttle is a compare-and-set on an `AtomicLong`.** Callbacks arrive from many
+  worker threads at once; a plain field let several of them through at the same
+  instant, producing interleaved output with timestamps that ran backwards.
+- **Counts are incremented inside each probe**, not in the collection loop. Collection
+  begins only after every task has been submitted, so a counter there stays at zero
+  for the entire sweep and then jumps.
+
+The console anchor is the segment, not a percentage: the number of segments is not
+known while a BFS is discovering more of them, so the display shows a lower bound
+(`of >=n`) rather than a total that would keep proving wrong.
+
+## 9. Concurrency
+
+Probes run on **virtual threads** via `ProbeExecutor`, a
+`newVirtualThreadPerTaskExecutor` with a semaphore cap of `--threads`. The permit is
+acquired *before* submission, not inside the task: unbounded submission would create
+a virtual thread per (host, port) pair — over a million on a /16 — and the cap is
+there to protect the network and the local ephemeral port range, which virtual
+threads do not enlarge.
+
+This also fixed a throughput defect. `discoverHosts` used to sweep one host at a time,
+waiting for that host's ports before starting the next, and ICMP was a plain
+sequential loop. Only about one host's probes were ever outstanding, so `--threads`
+had almost no effect and a /22 spent minutes in timeout waits. `tcpSweep` and
+`icmpSweep` now submit across all hosts, leaving the cap to decide real concurrency.
+
+`RateLimiter` remains the separate bound on probe *starts* per second (`--pps`).
+
+## 10. Web layer
 
 `JanusApplication` starts a Spring MVC app when `Main` is invoked with `--web`.
 `ReportController` exposes read-only endpoints over the latest report:
@@ -290,7 +338,7 @@ recorded where it is observed — per host MAC.
 Static assets (`index.html`, `style.css`, `app.js`) render a d3 force-directed
 topology.
 
-## 9. Serialization
+## 11. Serialization
 
 Janus runs on **Spring Boot 4 / Jackson 3** (`tools.jackson.*`). `JacksonConfig`
 provides:
@@ -302,7 +350,7 @@ provides:
 
 Using one configuration for both CLI and web keeps the JSON contract identical.
 
-## 10. Testing
+## 12. Testing
 
 Unit tests cover the pure logic that is easiest to get wrong and hardest to test
 live:

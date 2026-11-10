@@ -1,8 +1,10 @@
 package com.g120s.janus;
 
+import com.g120s.janus.cli.ConsoleProgress;
 import com.g120s.janus.configuration.JacksonConfig;
 import com.g120s.janus.discovery.DiscoveryConfig;
 import com.g120s.janus.discovery.DiscoveryOrchestrator;
+import com.g120s.janus.discovery.Progress;
 import com.g120s.janus.model.DiscoveryResult;
 import org.springframework.boot.SpringApplication;
 
@@ -19,7 +21,15 @@ public class Main {
             return;
         }
         DiscoveryConfig cfg = DiscoveryConfig.fromArgs(args);
-        DiscoveryResult r = new DiscoveryOrchestrator(cfg).run();
+        // Set before the first logger initialises, otherwise logback has already
+        // resolved the level from logback.xml and the switch has no effect.
+        if (cfg.verbose) {
+            System.setProperty("janus.log.level", "DEBUG");
+            System.setProperty("janus.log.pcap4j", "INFO");
+        }
+
+        Progress progress = ConsoleProgress.forMode(cfg, System.out, System.console() != null);
+        DiscoveryResult r = new DiscoveryOrchestrator(cfg, progress).run();
 
         JacksonConfig.cliMapper().writeValue(new java.io.File(cfg.outputPath), r);
 
@@ -29,6 +39,7 @@ public class Main {
             System.out.println("Warnings:");
             r.warnings.forEach(w -> System.out.println("  - " + w));
         }
+        System.out.println("  -> " + cfg.outputPath);
         System.out.println("For the web interface: java -jar janus.jar --web");
     }
 
@@ -48,6 +59,8 @@ public class Main {
                   --max-subnets N --max-depth N --max-hosts-per-subnet N --out FILE
                   --sweep-policy known|sample|full --sample-hosts-per-subnet N --pps N
                   --exclude CIDR       Range never to probe (repeatable)
+                  --progress auto|plain|none   Progress output (default auto); --quiet = none
+                  --verbose            Raise library logging to DEBUG
                   --esxi HOST,USER,PASSWORD
                   --proxmox HOST,PORT,USER,PASSWORD
                   --kvm HOST,USER,PASSWORD

@@ -157,6 +157,9 @@ Tips when names are missing:
 | `--sample-hosts-per-subnet` | 32 | Addresses sampled across the range under `--sweep-policy sample`. |
 | `--pps` | unlimited | Caps probe starts per second. `--threads` limits concurrency; this limits rate. Lower it to protect weak switches. |
 | `--exclude` | none | A range that must never be probed (repeatable). Applies even when a seed or SNMP route encloses it. |
+| `--progress` | `auto` | `auto` redraws in place on a terminal and prints plain lines when redirected; `plain` always prints lines; `none` is silent. |
+| `--quiet` | off | Same as `--progress none`. Use in scripts and cron jobs. |
+| `--verbose` | off | Raises the raw-socket libraries from warnings to info. Useful when a strategy misbehaves. |
 | `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
 
 Example for a /16 split into /24s with a bigger pool:
@@ -211,7 +214,48 @@ are in flight; `--pps` bounds how many *start* per second. 256 threads can still
 hammer a weak switch if every connect returns instantly, so pace with `--pps` when
 protecting fragile network hardware.
 
-## 5. Virtualization inventory
+## 5. Watching a scan run
+
+A scan reports what it is doing while it runs, so a long crawl is not a silent
+black box:
+
+```
+Janus network discovery
+  seeds    : 192.168.1.0/24
+  policy   : full (cap 1024/segment)   threads: 128   pps: unlimited
+  enabled  : tcp icmp arp mdns snmp lldp dns tls
+[00:00:00] 2 segment(s) queued from local interfaces and routes
+[00:00:00] crawling 192.168.1.0/24  (segment 1 of >=2, queue 1)  254 target(s)
+[00:00:03]   192.168.1.0/24  tcp 138/254  2 device(s)
+[00:00:06]   192.168.1.0/24  icmp 247/254  3 device(s)
+[00:00:32] done 192.168.1.0/24  3 device(s)  (31.8s)
+```
+
+Things worth knowing about this output:
+
+- **`of >=2`** — the number of subnets is not known when the crawl starts, because
+  new ones are discovered as routers report their interfaces and routes. The figure
+  is a lower bound that grows, not a fixed total that suddenly proves wrong.
+- **`tcp` and `icmp` are named** — they are two separate sweeps of the same range,
+  so their counters restart by design.
+- **One line is redrawn in place** on a terminal. When output is redirected to a
+  file the same events become plain lines, because a carriage return would
+  overwrite text inside the log instead of on screen.
+- **Updates are throttled** to about four per second; a `/16` is over a million
+  probes and reporting each one would cost more than the scan.
+
+Progress goes to stdout and is independent of the report file, so you can watch a
+scan and still capture the JSON.
+
+### Why virtual threads and `--threads`
+
+Probes run on virtual threads, with `--threads` as the cap on probes in flight.
+Blocking socket I/O parks a virtual thread cheaply, so the limit is there to protect
+the network and the local port range rather than to save memory. Raising
+`--threads` genuinely increases throughput; `--pps` remains the separate limit on
+probe *rate*.
+
+## 6. Virtualization inventory
 
 ### VMware ESXi and vCenter
 
@@ -256,7 +300,7 @@ When credentials are provided, the corresponding management subnets are added to
 the crawl and their VMs are enumerated over the API, then deduplicated against
 fingerprint-only results.
 
-## 6. Reading the report
+## 7. Reading the report
 
 Every run writes a single JSON document (pretty-printed). A trimmed device entry:
 
@@ -298,7 +342,7 @@ Field reference:
 Top-level `vhosts`, `vms`, `links`, `segments`, and `warnings` mirror the CLI
 summary and let consumers render topology or triage partial failures.
 
-### 6.2 `segments` — the discovered subnet inventory
+### 7.2 `segments` — the discovered subnet inventory
 
 Each segment records where it came from and how completely it was examined:
 
@@ -339,7 +383,7 @@ Each segment records where it came from and how completely it was examined:
 - **vlan** — populated only when a source states it; host-level VLAN membership is
   recorded on the device instead (see §6.3).
 
-### 6.3 Layer-2 and VLAN metadata on devices
+### 7.3 Layer-2 and VLAN metadata on devices
 
 When a switch or router exposes its forwarding tables, each host gains:
 
@@ -354,7 +398,7 @@ Sources: `dot1dTpFdbPort` + `dot1dBasePortIfIndex` for the VLAN-agnostic port,
 `dot1qVlanStaticName` for VLAN names. The web UI reads any `vlan.` key to colour
 and group by VLAN, so no separate field is needed.
 
-## 7. Using the web UI
+## 8. Using the web UI
 
 ```bash
 java -jar target/janus-0.0.1-SNAPSHOT.jar --web --server.port=8080 \
@@ -384,7 +428,7 @@ REST endpoints (all GET):
 Point it at a different report or directory with
 `--janus.report.path=FILE` or `--janus.report.dir=DIR`.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 - **No devices at all.** Confirm the CIDR is reachable, or that the range was not
   reduced by `--sweep-policy known` without SNMP data. Try disabling raw-socket
@@ -402,7 +446,7 @@ Point it at a different report or directory with
   `/api/health` responds; the UI loads `/api/report` on startup.
 - **Port probing is slow.** Lower `--tcp-timeout`; raise `--threads`.
 
-## 9. Safety and legal
+## 10. Safety and legal
 
 Scan only networks you own or are explicitly authorized to test. Port probing,
 ARP sweeps, and authenticated virtualization APIs can trigger IDS/IPS alarms and

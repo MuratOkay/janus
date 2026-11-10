@@ -38,3 +38,4 @@ janus.code-workspace
 ### Scan output ###
 discovery-report.json
 reports/
+report.json

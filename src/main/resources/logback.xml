@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Console logging is deliberately quiet by default: raw-socket libraries log every
+  interface they open, which used to look like application progress but said
+  nothing about what the scan was doing. User-facing progress comes from the
+  Progress observer, not from here. Raise detail with the verbose flag.
+-->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Levels come from system properties so the verbose flag can raise them;
+         a literal value here would make that switch silently do nothing. -->
+    <logger name="org.pcap4j" level="${janus.log.pcap4j:-WARN}"/>
+    <logger name="org.snmp4j" level="${janus.log.pcap4j:-WARN}"/>
+    <logger name="com.g120s.janus" level="${janus.log.level:-INFO}"/>
+
+    <root level="WARN">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
