@@ -486,6 +486,16 @@ Point it at a different report or directory with
 - **Web UI is empty.** Ensure a report file exists at the configured path and that
   `/api/health` responds; the UI loads `/api/report` on startup.
 - **Port probing is slow.** Lower `--tcp-timeout`; raise `--threads`.
+- **ARP needs a packet factory as well as privileges.** ARP needs both `CAP_NET_RAW`
+  and a decodable packet factory; pcap4j logs "No PacketFactoryBinder is available"
+  when the latter is missing, and then every captured frame is an `UnknownPacket`,
+  so ARP silently finds nothing. The build includes `pcap4j-packetfactory-static`
+  for this reason.
+- **Loopback or other non-LAN segments.** Ranges like `127.0.0.0/8`, `169.254.0.0/16`
+  and multicast space are never crawled, even when a device reports them; the report
+  says `ignored non-LAN segment ... from ...` so the skip is visible. This matters
+  most when the scanner's own SNMP agent is reachable, because every host lists its
+  loopback address in `ipAddrTable`.
 
 ## 10. Safety and legal
 

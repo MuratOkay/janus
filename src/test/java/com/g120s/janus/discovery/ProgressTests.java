@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * Progress must never be guessed. The total number of segments is unknown while the
  * BFS runs, so the display reports "of >=" rather than inventing a denominator, and
@@ -168,6 +167,57 @@ class ProgressTests {
         // A /16 enclosing the interface's /24 spans networks this link cannot ARP.
         assertFalse(DiscoveryOrchestrator.isOnLink("192.168.68.0/24", "192.168.0.0/16"));
         assertFalse(DiscoveryOrchestrator.isOnLink("192.168.68.0/22", "192.168.72.0/24"));
+    }
+
+    @Test
+    void loopbackIsRejectedFromEverySourceNotJustRoutes() {
+        // The regression: the guard was applied to SNMP routes but not to SNMP
+        // interface addresses, so a host's own SNMP agent reporting 127.0.0.1/8 in
+        // ipAddrTable started a loopback crawl. Loopback answers every probe, which
+        // produced 1024 invented devices in a single run.
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(new DiscoveryConfig());
+
+        for (String source : new String[]{"seed", "local-route", "snmp-if@10.0.0.1",
+                "snmp-route@10.0.0.1", "lldp-mgmt", "vm-management@10.0.0.5"}) {
+            DiscoveryOrchestrator.CrawlState state =
+                    new DiscoveryOrchestrator.CrawlState(new DiscoveryResult());
+            orchestrator.enqueue(state, new DiscoveryOrchestrator.Learned("127.0.0.0/8", false),
+                    source, null, null);
+
+            assertTrue(state.frontier.isEmpty(), source + " must not queue loopback");
+            assertTrue(state.r.warnings.stream().anyMatch(w -> w.contains("ignored non-LAN segment")),
+                    source + " should report why it was skipped");
+        }
+    }
+
+    @Test
+    void otherNonLanRangesAreRejectedToo() {
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(new DiscoveryConfig());
+
+        for (String cidr : new String[]{"169.254.0.0/16", "224.0.0.0/4", "239.1.0.0/16",
+                "0.0.0.0/0", "255.255.255.255/32"}) {
+            DiscoveryOrchestrator.CrawlState state =
+                    new DiscoveryOrchestrator.CrawlState(new DiscoveryResult());
+            orchestrator.enqueue(state, new DiscoveryOrchestrator.Learned(cidr, false),
+                    "snmp-if@10.0.0.1", null, null);
+
+            assertTrue(state.frontier.isEmpty(), cidr + " is not a LAN and must not be crawled");
+        }
+    }
+
+    @Test
+    void realSubnetsAreStillQueued() {
+        DiscoveryOrchestrator orchestrator = new DiscoveryOrchestrator(new DiscoveryConfig());
+
+        for (String cidr : new String[]{"192.168.1.0/24", "172.17.0.0/16", "10.20.0.0/16",
+                "192.168.68.0/22"}) {
+            DiscoveryOrchestrator.CrawlState state =
+                    new DiscoveryOrchestrator.CrawlState(new DiscoveryResult());
+            orchestrator.enqueue(state, new DiscoveryOrchestrator.Learned(cidr, false),
+                    "snmp-if@10.0.0.1", null, null);
+
+            assertEquals(1, state.frontier.size(), cidr + " should still be crawled");
+        }
     }
 
     @Test

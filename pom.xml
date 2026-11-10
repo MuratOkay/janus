@@ -50,6 +50,17 @@
 			<artifactId>pcap4j-core</artifactId>
 			<version>1.8.2</version>
 		</dependency>
+		<!--
+			Without a packet factory binder every captured frame is decoded as an
+			UnknownPacket, so L2Scanner's `packet.get(ArpPacket.class)` returned null
+			and ARP silently found nothing even with CAP_NET_RAW. pcap4j logs this as
+			"No PacketFactoryBinder is available", which is easy to mistake for noise.
+		-->
+		<dependency>
+			<groupId>org.pcap4j</groupId>
+			<artifactId>pcap4j-packetfactory-static</artifactId>
+			<version>1.8.2</version>
+		</dependency>
 		<dependency>
 			<groupId>dnsjava</groupId>
 			<artifactId>dnsjava</artifactId>

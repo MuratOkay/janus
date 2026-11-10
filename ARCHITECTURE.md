@@ -99,6 +99,14 @@ native loading, so they are unaffected either way.
    Very large segments are expanded only up to `maxHostsPerSubnet` addresses and
    the shortfall is reported instead of silently under-reporting a network.
 
+   `enqueue` is also the single place where non-LAN ranges are rejected
+   (`isUnroutable`: loopback, link-local, multicast, the default route). That check
+   deliberately lives at the choke point rather than at each call site. Guarding
+   individual call sites left one uncovered: a host's own SNMP agent reports
+   `127.0.0.1` in `ipAddrTable`, which started a crawl of `127.0.0.0/8` that
+   answered every probe and invented 1024 devices. Because loopback replies to
+   anything, no amount of probe-level caution would have caught it.
+
    **Depth is measured in hops, not network count.** A seed has `depth = 0` and
    every subnet learned while crawling a segment gets `parentCidr` set and
    `depth = parent.depth + 1`. `--max-depth` therefore limits how far from the

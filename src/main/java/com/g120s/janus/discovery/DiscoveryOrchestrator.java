@@ -56,10 +56,6 @@ public class DiscoveryOrchestrator {
                 enqueue(state, new Learned(cidr, false), "local-interface", null, null);
             }
             for (LocalRoutes.Route route : LocalRoutes.read()) {
-                // A host routing table contains loopback, link-local and multicast
-                // routes that are not LANs. Crawling 127.0.0.0/8 also "discovers"
-                // every address asked about, because the loopback answers anything.
-                if (isUnroutable(route.cidr())) continue;
                 enqueue(state, new Learned(route.cidr(), false), "local-route", null, route.gateway());
             }
         } else {
@@ -288,7 +284,7 @@ public class DiscoveryOrchestrator {
                     for (String dst : s.routes().keySet()) {
                         if (SnmpScanner.ROUTE_TYPE_INVALID.equals(s.routeTypes().get(dst))) continue;
                         Learned learned = toCidr(dst, s.routeMasks().get(dst));
-                        if (learned == null || isUnroutable(learned.cidr())) continue;
+                        if (learned == null) continue;
                         enqueue(state, learned, "snmp-route@" + d.ip.getHostAddress(),
                                 parent, s.routes().get(dst));
                     }
@@ -556,6 +552,16 @@ public class DiscoveryOrchestrator {
         }
         if (Cidr.prefix(normalized) < Cidr.MIN_PREFIX) {
             state.r.warnings.add("ignored oversized segment " + normalized + " from " + source);
+            return;
+        }
+        // Loopback, link-local, multicast and the default route are never LANs, no
+        // matter which source proposed them. This check lives here, at the single
+        // choke point, because guarding individual call sites missed one: a host's
+        // own SNMP agent reports 127.0.0.1/8 in ipAddrTable, and that enqueued a
+        // loopback crawl that answered every probe and invented 1024 devices.
+        if (isUnroutable(normalized)) {
+            String warning = "ignored non-LAN segment " + normalized + " from " + source;
+            if (!state.r.warnings.contains(warning)) state.r.warnings.add(warning);
             return;
         }
         int depth = parent == null ? 0 : parent.depth + 1;
