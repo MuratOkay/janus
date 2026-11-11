@@ -28,7 +28,7 @@ main { height: calc(100vh - 64px); position: relative; }
 #details h2 { margin: 0 24px 12px 0; font-size: 16px; color: #93c5fd; }
 #close { position: absolute; top: 7px; right: 7px; padding: 2px 8px; }
 table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
-td { padding: 4px; vertical-align: top; border-bottom: 1px solid #374151; }
+td { padding: 4px; vertical-align: top; border-bottom: 1px solid #374151; white-space: pre-line; }
 td:first-child { width: 105px; color: #9ca3af; }
 #legend { left: 16px; bottom: 16px; max-height: 40%; overflow: auto; }
 #subnets {

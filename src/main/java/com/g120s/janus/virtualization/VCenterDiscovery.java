@@ -104,6 +104,22 @@ public final class VCenterDiscovery {
             }
         } catch (Exception ignored) {}
 
+        // CPU and memory come from the host summary we already hold, so this costs no
+        // extra round trip. cpuModel is the real model string, unlike the raw speed.
+        try {
+            if (hs.getSummary() != null && hs.getSummary().getHardware() != null) {
+                com.vmware.vim25.HostHardwareSummary info = hs.getSummary().getHardware();
+                com.g120s.janus.model.Hardware hardware = new com.g120s.janus.model.Hardware();
+                if (info.getNumCpuCores() > 0) hardware.cpuCores = (int) info.getNumCpuCores();
+                if (info.getCpuModel() != null && !info.getCpuModel().isBlank()) {
+                    hardware.cpuType = info.getCpuModel();
+                }
+                if (info.getMemorySize() > 0) hardware.memTotalBytes = info.getMemorySize();
+                hardware.source = "vsphere";
+                if (!hardware.isEmpty()) vh.hardware = hardware;
+            }
+        } catch (Exception ignored) {}
+
         // Runtime state
         try {
             if (hs.getRuntime() != null) {

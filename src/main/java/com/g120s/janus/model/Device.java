@@ -23,6 +23,7 @@ public class Device {
     public String osGuess;
     public String virtualizationType; // esxi, vcenter, proxmox, kvm, hyperv, xen, nutanix, virtualbox
     public String ownerHostId; // if a VM, the id of the host it belongs to (mac/ip/uuid)
+    public Hardware hardware;  // static CPU/memory/disk inventory; null when unknown
     public Map<String, String> metadata = new HashMap<>();
 
     @Override

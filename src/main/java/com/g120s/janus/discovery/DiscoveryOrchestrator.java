@@ -306,6 +306,12 @@ public class DiscoveryOrchestrator {
                     collectKnown(state, d.ip.getHostAddress());
                     // Locate hosts on switch ports and, where the device exposes it, per VLAN.
                     applyBridgeTables(state, s, d);
+                    // Static CPU/RAM/disk inventory. Opt-in: it is several extra walks
+                    // per device, which adds up across a large range.
+                    if (cfg.hardware) {
+                        d.hardware = HardwareProbe.fromSnmp(SnmpScanner.hostResources(
+                                d.ip.getHostAddress(), comm, cfg.snmpTimeoutMs));
+                    }
                     break; // successful community
                 } catch (Exception ex) {
                     r.warnings.add("snmp@" + d.ip.getHostAddress() + ": " + ex.getMessage());

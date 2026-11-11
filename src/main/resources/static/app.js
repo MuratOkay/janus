@@ -81,6 +81,7 @@ function buildGraph() {
             hostname: device.hostname,
             discoveredBy: device.discoveredBy || [],
             metadata: device.metadata || {},
+            hardware: device.hardware || null,
             ownerHostId: device.ownerHostId || null,
             group: "device"
         });
@@ -97,6 +98,7 @@ function buildGraph() {
             discoveredBy: [host.source || "api"],
             managementNets: host.managementNets || [],
             metadata: host.metadata || {},
+            hardware: host.hardware || null,
             group: "vhost"
         });
     }
@@ -250,6 +252,44 @@ function switchPort(node) {
     return port || name || null;
 }
 
+/** "8 x Intel(R) Core..." — the core count is omitted when the model alone is known. */
+function hardwareCpu(node) {
+    const hw = node.hardware;
+    if (!hw) return null;
+    const parts = [];
+    if (hw.cpuCores) parts.push(`${hw.cpuCores} core${hw.cpuCores === 1 ? "" : "s"}`);
+    if (hw.cpuType) parts.push(hw.cpuType);
+    return parts.length ? parts.join(" \u00d7 ") : null;
+}
+
+/** Binary units, because RAM is always sold and reported in GiB-style powers of two. */
+function formatBytes(bytes) {
+    if (typeof bytes !== "number" || bytes <= 0) return null;
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function hardwareMemory(node) {
+    return formatBytes(node.hardware?.memTotalBytes);
+}
+
+/** One line per filesystem: "mount  total (free free)". */
+function hardwareDisks(node) {
+    const disks = node.hardware?.disks;
+    if (!disks?.length) return null;
+    return disks.map(disk => {
+        const total = formatBytes(disk.totalBytes);
+        const free = formatBytes(disk.freeBytes);
+        return free ? `${disk.mount}  ${total} (${free} free)` : `${disk.mount}  ${total}`;
+    }).join("\n");
+}
+
 function matches(node, query) {
     return !query || [node.ip, node.mac, node.hostname, node.label, node.type]
         .filter(Boolean).join(" ").toLowerCase().includes(query);
@@ -266,7 +306,11 @@ function showDetails(node) {
         ["Management networks", node.managementNets?.join(", ")],
         ["NICs", node.nics?.join(", ")],
         ["Switch", node.metadata?.["l2.switch"]],
-        ["Switch port", switchPort(node)]
+        ["Switch port", switchPort(node)],
+        ["CPU", hardwareCpu(node)],
+        ["Memory", hardwareMemory(node)],
+        ["Disks", hardwareDisks(node)],
+        ["Hardware source", node.hardware?.source]
     ];
     for (const [key, value] of Object.entries(node.metadata || {})) rows.push([key, value]);
     const table = document.createElement("table");

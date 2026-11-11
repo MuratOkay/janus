@@ -2,7 +2,9 @@ package com.g120s.janus.virtualization;
 
 import com.g120s.janus.model.VirtualMachine;
 import com.g120s.janus.model.VirtualizationHost;
+import com.g120s.janus.model.Hardware;
 import org.libvirt.Connect;
+import org.libvirt.NodeInfo;
 import org.libvirt.Domain;
 import org.libvirt.Network;
 import org.w3c.dom.*;
@@ -49,6 +51,22 @@ public final class LibvirtDiscovery {
         virtualizationHost.version = "libvirt " + connection.getLibVersion();
         virtualizationHost.metadata.put("driver", driver);
         virtualizationHost.metadata.put("uri", options.uri());
+
+        // NodeInfo gives the hypervisor host's own cpu/memory, which costs one call
+        // and is exact — no SNMP or agent needed on a machine we already control.
+        try {
+            NodeInfo node = connection.nodeInfo();
+            if (node != null) {
+                Hardware hardware = new Hardware();
+                hardware.cpuCores = node.cpus;
+                hardware.memTotalBytes = node.memory * 1024L;   // libvirt reports KiB
+                if (node.model != null && !node.model.isBlank()) hardware.cpuType = node.model;
+                hardware.source = "libvirt";
+                virtualizationHost.hardware = hardware;
+            }
+        } catch (Exception e) {
+            virtualizationHost.metadata.put("hardwareError", String.valueOf(e.getMessage()));
+        }
 
         Set<String> networks = new TreeSet<>();
         for (String networkName : nullToEmpty(connection.listNetworks())) {

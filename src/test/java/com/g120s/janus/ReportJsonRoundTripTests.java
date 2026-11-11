@@ -3,6 +3,7 @@ package com.g120s.janus;
 import com.g120s.janus.configuration.JacksonConfig;
 import com.g120s.janus.model.Device;
 import com.g120s.janus.model.DiscoveryResult;
+import com.g120s.janus.model.Hardware;
 import com.g120s.janus.model.NetworkSegment;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -73,6 +74,47 @@ class ReportJsonRoundTripTests {
         assertEquals(254, read.hostsProbed);
         assertEquals(254, read.hostsTotal);
         assertEquals(java.util.Set.of("snmp-if@10.0.0.1"), read.discoveredBy);
+    }
+
+    @Test
+    void hardwareInventorySurvivesRoundTrip() throws Exception {
+        DiscoveryResult original = new DiscoveryResult();
+        Device device = new Device();
+        device.ip = InetAddress.getByName("192.168.1.10");
+        Hardware hardware = new Hardware();
+        hardware.cpuCores = 8;
+        hardware.cpuType = "Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz";
+        hardware.memTotalBytes = 8159805440L;
+        hardware.source = "snmp-hr";
+        hardware.disks.add(new Hardware.Disk("/", "ext4", 249792131072L, 98348396544L));
+        device.hardware = hardware;
+        original.devices.add(device);
+
+        DiscoveryResult decoded = mapper.readValue(mapper.writeValueAsString(original), DiscoveryResult.class);
+        Hardware read = decoded.devices.getFirst().hardware;
+        assertNotNull(read);
+        assertEquals(8, read.cpuCores);
+        assertEquals("Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz", read.cpuType);
+        assertEquals(8159805440L, read.memTotalBytes);
+        assertEquals("snmp-hr", read.source);
+        assertEquals(1, read.disks.size());
+        assertEquals("/", read.disks.getFirst().mount());
+        assertEquals(249792131072L, read.disks.getFirst().totalBytes());
+        assertEquals(98348396544L, read.disks.getFirst().freeBytes());
+    }
+
+    @Test
+    void devicesWithoutHardwareRoundTripAsNull() throws Exception {
+        // Most devices expose nothing; the field must stay absent rather than becoming
+        // an object full of zeroes.
+        DiscoveryResult original = new DiscoveryResult();
+        Device device = new Device();
+        device.ip = InetAddress.getByName("192.168.1.1");
+        original.devices.add(device);
+
+        DiscoveryResult decoded = mapper.readValue(mapper.writeValueAsString(original), DiscoveryResult.class);
+
+        assertNull(decoded.devices.getFirst().hardware);
     }
 
     @Test

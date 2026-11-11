@@ -8,5 +8,6 @@ public class VirtualizationHost {
     public String ip, name, version, source;
     public Set<String> vmMacs = new TreeSet<>();   // MACs of the managed VMs
     public Set<String> managementNets = new TreeSet<>();  // host VMkernel/bridge subnets
+    public com.g120s.janus.model.Hardware hardware;       // CPU/memory/disk; null when unknown
     public Map<String, String> metadata = new HashMap<>();
 }

@@ -189,6 +189,31 @@ flight.
 9. **TLS name** — if no `ptr`/`snmp` name was found and an HTTPS port is open,
    the certificate CN/SAN becomes the `tls` name.
 
+### Hardware inventory
+
+Opt-in via `--hardware`, because it costs several extra SNMP walks per device.
+`HardwareProbe` turns HOST-RESOURCES-MIB tables into `Device.hardware`, and
+`SnmpScanner.walkIntegerIndexed` exists for this: these tables are keyed by a plain
+row index, so the address-keyed walker would mislabel every row.
+
+Three properties are enforced rather than assumed, each verified against a real
+net-snmp agent:
+
+| Trap | Rule |
+| --- | --- |
+| `hrStorageTable` holds RAM, swap, caches and `tmpfs` mounts | require `hrStorageFixedDisk` **and** a non-virtual mount point; `tmpfs` shares the fixed-disk type |
+| `hrStorageSize` is a block count | multiply by `hrStorageAllocationUnits` (4096 on Linux) |
+| `hrDeviceTable` mixes CPUs with NICs | select rows where `hrDeviceType = hrDeviceProcessor`; otherwise 8 cores report as 12 |
+
+Every field is nullable and `Hardware.isEmpty()` distinguishes "nothing was
+learned" from "the device reported zero". An unsupported agent yields
+`hardware: null`, never a zeroed object.
+
+The authenticated APIs answer first for their own hosts, where the data is exact
+and free: `LibvirtDiscovery` uses `NodeInfo` (`cpus`, `memory` in KiB, `model`) and
+`VCenterDiscovery` uses `HostHardwareSummary` (`numCpuCores`, `cpuModel`,
+`memorySize`).
+
 ## 4.1 Host name resolution
 
 `NameResolver` is the single place that decides a device's `hostname`. Every

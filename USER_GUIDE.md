@@ -189,6 +189,7 @@ Tips when names are missing:
 | `--progress` | `auto` | `auto` redraws in place on a terminal and prints plain lines when redirected; `plain` always prints lines; `none` is silent. |
 | `--quiet` | off | Same as `--progress none`. Use in scripts and cron jobs. |
 | `--verbose` | off | Raises the raw-socket libraries from warnings to info. Useful when a strategy misbehaves. |
+| `--hardware` | off | Reads CPU, memory and disk inventory from SNMP HOST-RESOURCES-MIB. Costs several extra walks per responding device. |
 | `--lldp-duration` | 45000 ms | Longer captures catch more advertisements on slow networks. |
 
 Example for a /16 split into /24s with a bigger pool:
@@ -414,9 +415,59 @@ Each segment records where it came from and how completely it was examined:
   `ifName`) for subnets learned from a router's attached interfaces, e.g.
   `uplink-to-core`.
 - **vlan** — populated only when a source states it; host-level VLAN membership is
-  recorded on the device instead (see §6.3).
+  recorded on the device instead (see §7.3).
 
 ### 7.3 Layer-2 and VLAN metadata on devices
+
+When a switch or router exposes its forwarding tables, each host gains:
+
+- `l2.switch` — the IP of the switch that reported the port.
+- `l2.bridgePort` / `l2.portName` — the bridge port number and its interface name,
+  e.g. `12` and `Gi1/0/12`.
+- `vlan.<id>` — the bridge port the host reaches on that VLAN, and
+  `vlan.<id>.name` when the switch names the VLAN.
+
+Sources: `dot1dTpFdbPort` + `dot1dBasePortIfIndex` for the VLAN-agnostic port,
+`dot1qTpFdbPort` (indexed by VLAN + MAC) for per-VLAN placement, and
+`dot1qVlanStaticName` for VLAN names. The web UI reads any `vlan.` key to colour
+and group by VLAN, so no separate field is needed.
+
+### 7.4 Hardware inventory
+
+With `--hardware`, devices that expose SNMP HOST-RESOURCES-MIB report their static
+inventory. Most consumer network gear does not, so expect `hardware: null` there.
+
+```json
+"hardware": {
+  "cpuCores": 8,
+  "cpuType": "GenuineIntel: Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz",
+  "memTotalBytes": 8159805440,
+  "disks": [
+    { "mount": "/", "name": "ext4", "totalBytes": 249792131072, "freeBytes": 104857600000 },
+    { "mount": "/boot/efi", "name": "vfat", "totalBytes": 1125003264, "freeBytes": 1100000000 }
+  ],
+  "source": "snmp-hr"
+}
+```
+
+Sources: `snmp-hr` (HOST-RESOURCES-MIB), `libvirt` (`NodeInfo`), `vsphere`
+(`HostHardwareSummary`). Three details are handled rather than glossed over:
+
+- **`hrStorageTable` is not a disk list.** It also holds RAM, swap, caches and every
+  `tmpfs` mount, and `tmpfs` rows carry the same `hrStorageFixedDisk` type as `/`.
+  Both the type and the mount point are checked, so only real filesystems appear.
+- **Sizes are multiplied by `hrStorageAllocationUnits`.** A bare `hrStorageSize` is
+  a block count; on Linux that understates a disk by 4096×.
+- **`hrDeviceTable` mixes CPUs with network interfaces,** so processor rows are
+  selected by `hrDeviceType`. Without that filter an 8-core machine reports 12
+  cores, four of them NICs.
+
+`freeBytes` reflects total minus used. On ext4 this is larger than `df`'s
+*Available* figure, because ext4 reserves roughly 5% for root — both numbers are
+correct, they answer slightly different questions.
+
+Where an API is already authenticated, that source wins for its own host: libvirt
+and vSphere report cores and memory exactly, with no SNMP needed.
 
 When a switch or router exposes its forwarding tables, each host gains:
 

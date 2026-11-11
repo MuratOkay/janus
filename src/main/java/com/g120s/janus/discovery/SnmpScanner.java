@@ -34,6 +34,85 @@ public final class SnmpScanner {
     /** ipRouteType `invalid`, per RFC 1213 — the row is not a usable route. */
     static final String ROUTE_TYPE_INVALID = "2";
 
+    // HOST-RESOURCES-MIB (RFC 2790): CPU, memory and filesystem inventory.
+    static final OID HR_MEMORY_SIZE   = new OID("1.3.6.1.2.1.25.2.2.0");    // hrMemorySize (KB)
+    static final OID HR_STORAGE_TYPE  = new OID("1.3.6.1.2.1.25.2.3.1.2");  // hrStorageType
+    static final OID HR_STORAGE_DESCR = new OID("1.3.6.1.2.1.25.2.3.1.3");  // hrStorageDescr
+    static final OID HR_STORAGE_UNITS = new OID("1.3.6.1.2.1.25.2.3.1.4");  // hrStorageAllocationUnits
+    static final OID HR_STORAGE_SIZE  = new OID("1.3.6.1.2.1.25.2.3.1.5");  // hrStorageSize
+    static final OID HR_STORAGE_USED  = new OID("1.3.6.1.2.1.25.2.3.1.6");  // hrStorageUsed
+    static final OID HR_DEVICE_TYPE   = new OID("1.3.6.1.2.1.25.3.2.1.2");  // hrDeviceType
+    static final OID HR_DEVICE_DESCR  = new OID("1.3.6.1.2.1.25.3.2.1.3");  // hrDeviceDescr
+    static final OID HR_PROCESSOR_LOAD= new OID("1.3.6.1.2.1.25.3.3.1.2");  // hrProcessorLoad
+    static final OID HR_FS_MOUNT      = new OID("1.3.6.1.2.1.25.3.8.1.2");  // hrFSMountPoint
+    static final OID HR_FS_STORAGE    = new OID("1.3.6.1.2.1.25.3.8.1.7");  // hrFSStorageIndex
+
+    /** {@code hrStorageFixedDisk}; note tmpfs shares this type, see HardwareProbe. */
+    static final String HR_TYPE_FIXED_DISK = "1.3.6.1.2.1.25.2.1.4";
+    /** {@code hrDeviceProcessor} — filters CPUs out of a table that also holds NICs. */
+    static final String HR_DEVICE_PROCESSOR = "1.3.6.1.2.1.25.3.1.3";
+
+    /** The raw HOST-RESOURCES tables needed to build a hardware inventory. */
+    public record HostResources(String memorySizeKb,
+                                Map<String,String> storageTypes,
+                                Map<String,String> storageDescriptions,
+                                Map<String,String> storageAllocationUnits,
+                                Map<String,String> storageSizes,
+                                Map<String,String> storageUsed,
+                                Map<String,String> deviceTypes,
+                                Map<String,String> deviceDescriptions,
+                                Map<String,String> processorLoads,
+                                Map<String,String> fsMountPoints,
+                                Map<String,String> fsStorageIndexes) {
+
+        /** True when the device answered nothing useful, e.g. no HOST-RESOURCES support. */
+        public boolean isEmpty() {
+            return memorySizeKb == null && storageSizes.isEmpty()
+                    && processorLoads.isEmpty() && fsMountPoints.isEmpty();
+        }
+    }
+
+    /**
+     * Reads the HOST-RESOURCES-MIB tables. Returns {@code null} when the agent does
+     * not implement them, which is the common case for consumer network gear.
+     */
+    public static HostResources hostResources(String host, String community, int timeoutMs)
+            throws Exception {
+        try (TransportMapping<?> transport = new DefaultUdpTransportMapping()) {
+            transport.listen();
+            Snmp snmp = new Snmp(transport);
+            CommunityTarget<Address> t = new CommunityTarget<>();
+            t.setCommunity(new OctetString(community));
+            t.setAddress(GenericAddress.parse("udp:" + host + "/161"));
+            t.setRetries(1);
+            t.setTimeout(timeoutMs);
+            t.setVersion(SnmpConstants.version2c);
+
+            // hrMemorySize is a scalar; if it is absent the agent has no HOST-RESOURCES
+            // support at all, so there is no point walking the tables.
+            String memory = get(snmp, t, HR_MEMORY_SIZE);
+            if (memory == null) {
+                snmp.close();
+                return null;
+            }
+
+            HostResources resources = new HostResources(
+                    memory,
+                    walkIntegerIndexed(snmp, t, HR_STORAGE_TYPE),
+                    walkIntegerIndexed(snmp, t, HR_STORAGE_DESCR),
+                    walkIntegerIndexed(snmp, t, HR_STORAGE_UNITS),
+                    walkIntegerIndexed(snmp, t, HR_STORAGE_SIZE),
+                    walkIntegerIndexed(snmp, t, HR_STORAGE_USED),
+                    walkIntegerIndexed(snmp, t, HR_DEVICE_TYPE),
+                    walkIntegerIndexed(snmp, t, HR_DEVICE_DESCR),
+                    walkIntegerIndexed(snmp, t, HR_PROCESSOR_LOAD),
+                    walkIntegerIndexed(snmp, t, HR_FS_MOUNT),
+                    walkIntegerIndexed(snmp, t, HR_FS_STORAGE));
+            snmp.close();
+            return resources;
+        }
+    }
+
     public record SnmpResult(String sysDescr, String sysName, String sysLoc,
                              List<String> ipAddresses,
                              Map<String,String> ifMasks,
@@ -118,6 +197,21 @@ public final class SnmpScanner {
      * what keeps a destination and its mask aligned.
      */
     private static Map<String,String> walkIndexed(Snmp snmp, Target<Address> t, OID col) throws Exception {
+        return walkIntegerKeyed(snmp, t, col, false);
+    }
+
+    /**
+     * Walks a column keyed by a plain integer row index, as HOST-RESOURCES-MIB tables
+     * are. Reusing the address decoder for these would mislabel every row: a storage
+     * index of {@code 36} has nothing to do with {@code 0.0.0.36}.
+     */
+    private static Map<String,String> walkIntegerIndexed(Snmp snmp, Target<Address> t, OID col)
+            throws Exception {
+        return walkIntegerKeyed(snmp, t, col, true);
+    }
+
+    private static Map<String,String> walkIntegerKeyed(Snmp snmp, Target<Address> t, OID col,
+                                                       boolean integerIndex) throws Exception {
         Map<String,String> out = new LinkedHashMap<>();
         OID cur = col;
         while (true) {
@@ -128,7 +222,9 @@ public final class SnmpScanner {
             if (r == null || r.getResponse() == null) break;
             VariableBinding vb = r.getResponse().get(0);
             if (!vb.getOid().startsWith(col) || vb.getVariable().isException()) break;
-            String key = indexKey(col, vb.getOid());
+            String key = integerIndex
+                    ? singleIntKey(suffixOf(col, vb.getOid()))
+                    : indexKey(col, vb.getOid());
             if (key != null) out.put(key, vb.getVariable().toString());
             cur = vb.getOid();
         }

@@ -61,6 +61,7 @@ public class Main {
                   --exclude CIDR       Range never to probe (repeatable)
                   --progress auto|plain|none   Progress output (default auto); --quiet = none
                   --verbose            Raise library logging to DEBUG
+                  --hardware           Read CPU/RAM/disk inventory from SNMP HOST-RESOURCES-MIB
                   --esxi HOST,USER,PASSWORD
                   --proxmox HOST,PORT,USER,PASSWORD
                   --kvm HOST,USER,PASSWORD
