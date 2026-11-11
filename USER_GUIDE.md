@@ -354,6 +354,10 @@ Field reference:
 
 - **kind** — `WORKSTATION`, `SERVER`, `ROUTER`, `SWITCH`, `FIREWALL`, `PRINTER`,
   `IOT`, `MOBILE`, `STORAGE`, `VIRTUALIZATION_HOST`, `VIRTUAL_MACHINE`, `UNKNOWN`.
+  `ROUTER`/`SWITCH` normally come from SNMP `sysDescr`, so on a network with SNMP
+  disabled they would never appear. The default gateway is the exception: whatever
+  address forwards this host's off-link traffic is marked `ROUTER` with
+  `metadata.role` set to `default gateway`, no credentials required.
 - **hostname** — the best name found, chosen by source precedence (see §3.1).
 - **aliases** — every distinct name found for the host, from all sources.
 - **fqdn** — the first fully-qualified name found (contains a dot), or `null`.

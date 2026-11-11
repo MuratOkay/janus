@@ -178,9 +178,15 @@ flight.
 5. **Virtualization fingerprint** — `VirtualizationDetector.guessType`; on a hit,
    a `VirtualizationHost` is registered and the device marked accordingly.
 6. **VM detection** — known VM MAC ranges mark the device `VIRTUAL_MACHINE`.
-7. **OS guess** — `OsFingerprint.guess` derives `osGuess` from `sysDescr`, open
+7. **Default gateway** — if the device's address equals this host's default-route
+   next hop (`LocalRoutes.defaultGateway`), its kind becomes `ROUTER` and
+   `metadata.role` is set to `default gateway`. This is the only router that can be
+   identified without credentials: on a network where SNMP is disabled, every other
+   rule for `ROUTER`/`SWITCH` depends on `sysDescr`. Applied last so it can only
+   fill in an `UNKNOWN` kind, never overwrite a virtualization fingerprint.
+8. **OS guess** — `OsFingerprint.guess` derives `osGuess` from `sysDescr`, open
    ports, hostname and vendor.
-8. **TLS name** — if no `ptr`/`snmp` name was found and an HTTPS port is open,
+9. **TLS name** — if no `ptr`/`snmp` name was found and an HTTPS port is open,
    the certificate CN/SAN becomes the `tls` name.
 
 ## 4.1 Host name resolution

@@ -12,6 +12,8 @@ public class DiscoveryOrchestrator {
     private final ProbeExecutor pool;
     private final Progress progress;
     private final RateLimiter limiter;
+    /** Resolved once: the default route does not change during a scan. */
+    private final String defaultGateway;
     private final List<Integer> probePorts = List.of(22,23,53,80,135,139,443,445,902,
             3389,5985,5986,8006,8080,8443,9440,16509);
 
@@ -28,6 +30,7 @@ public class DiscoveryOrchestrator {
         this.progress = progress == null ? Progress.NONE : progress;
         this.pool = new ProbeExecutor(Math.max(2, cfg.threadPool));
         this.limiter = new RateLimiter(cfg.probesPerSecond);
+        this.defaultGateway = LocalRoutes.defaultGateway();
     }
 
     public DiscoveryResult run() throws Exception {
@@ -324,6 +327,14 @@ public class DiscoveryOrchestrator {
         String vmv = VirtualizationDetector.vmVendorByMac(d.mac);
         if (vmv != null) d.kind = Device.Kind.VIRTUAL_MACHINE;
 
+        // The default gateway is the one router identifiable without credentials.
+        // Applied after SNMP and virtualization so it can only fill in an unknown
+        // kind, never overwrite a more specific finding.
+        if (d.kind == Device.Kind.UNKNOWN && isDefaultGateway(d.ip)) {
+            d.kind = Device.Kind.ROUTER;
+            d.metadata.put("role", "default gateway");
+        }
+
         // Operating system guess (SNMP sysDescr + ports + hostname + OUI)
         if (d.osGuess == null) {
             d.osGuess = OsFingerprint.guess(d);
@@ -524,6 +535,14 @@ public class DiscoveryOrchestrator {
             return true;
         }
         return false;
+    }
+
+    /** Is this address the next hop of our own default route? */
+    boolean isDefaultGateway(InetAddress ip) {
+        if (ip == null) return false;
+        String gateway = defaultGateway;
+        if (gateway == null) return false;
+        return gateway.equals(ip.getHostAddress());
     }
 
     /**

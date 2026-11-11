@@ -72,6 +72,42 @@ public final class LocalRoutes {
         return routes;
     }
 
+    /**
+     * The next hop of this host's default route, or {@code null} when there is none.
+     *
+     * <p>The default route is correctly excluded from {@link #parse} because it is not
+     * a crawlable LAN, but its next hop is still a useful fact: whatever answers to
+     * that address is, by definition, the device forwarding this host's off-link
+     * traffic. That makes it the one router we can identify without any credentials.
+     */
+    public static String defaultGateway() {
+        try {
+            return defaultGatewayFrom(Files.readAllLines(PROC_ROUTE));
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Extracts the default route's next hop from {@code /proc/net/route} content. */
+    static String defaultGatewayFrom(List<String> lines) {
+        if (lines == null) return null;
+        for (String line : lines) {
+            if (line == null || line.isBlank()) continue;
+            String[] fields = line.trim().split("\\s+");
+            if (fields.length < 8) continue;
+            Long destination = parseHexIp(fields[1]);
+            Integer flags = parseHex(fields[3]);
+            if (destination == null || flags == null) continue;
+            if (destination != 0) continue;                  // not the default route
+            if ((flags & RTF_UP) == 0) continue;
+            if ((flags & RTF_GATEWAY) == 0) continue;        // no next hop to report
+            Long nextHop = parseHexIp(fields[2]);
+            if (nextHop == null || nextHop == 0L) return null;
+            return Cidr.toIp(nextHop);
+        }
+        return null;
+    }
+
     private static Integer parseHex(String value) {
         try {
             return Integer.parseInt(value, 16);

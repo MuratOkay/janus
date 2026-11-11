@@ -84,8 +84,36 @@ class LocalRoutesTests {
     }
 
     @Test
-    void readsTheRealTableWithoutThrowing() {
+    void defaultGatewayIsExtractedFromTheDefaultRoute() {
+        // Previously the default route was discarded entirely, so the one device that
+        // is provably a router was never classified as one.
+        assertEquals("192.168.68.1", LocalRoutes.defaultGatewayFrom(SAMPLE));
+    }
+
+    @Test
+    void defaultGatewayIgnoresOtherRoutes() {
+        List<String> onlyConnected = List.of(
+                "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT",
+                "wlo1\t0044A8C0\t00000000\t0001\t0\t0\t600\t00FCFFFF\t0\t0\t0");
+
+        assertNull(LocalRoutes.defaultGatewayFrom(onlyConnected),
+                "a connected route has no next hop and is not a gateway");
+        assertNull(LocalRoutes.defaultGatewayFrom(List.of()));
+        assertNull(LocalRoutes.defaultGatewayFrom(null));
+    }
+
+    @Test
+    void defaultGatewayIsNullWhenTheRouteHasNoGatewayFlag() {
+        List<String> odd = List.of(
+                "wlo1\t00000000\t0144A8C0\t0001\t0\t0\t600\t00000000\t0\t0\t0");
+
+        assertNull(LocalRoutes.defaultGatewayFrom(odd),
+                "without RTF_GATEWAY there is no next hop to report");
+    }
+
+    @Test
+    void readsTheRealGatewayWithoutThrowing() {
         // Must never fail, whatever platform this runs on.
-        assertNotNull(LocalRoutes.read());
+        assertDoesNotThrow(LocalRoutes::defaultGateway);
     }
 }
