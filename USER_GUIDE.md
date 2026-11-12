@@ -330,6 +330,27 @@ When credentials are provided, the corresponding management subnets are added to
 the crawl and their VMs are enumerated over the API, then deduplicated against
 fingerprint-only results.
 
+### Server BMCs over Redfish
+
+Redfish is the only method here that needs **no agent on the host at all**, and it
+keeps working while the machine is powered off. It reports model, serial number,
+processor count and total memory:
+
+```bash
+java -jar target/janus-0.0.1-SNAPSHOT.jar --cidr 10.0.0.0/24 \
+  --redfish 10.0.0.50 --redfish-user root --redfish-pass secret \
+  --redfish-insecure --out reports/servers.json
+```
+
+`--redfish-insecure` skips certificate verification, which most BMCs require because
+they ship self-signed certificates. Add `--redfish-port` if the service is not on
+443.
+
+Redfish is read-only here: Janus calls inventory endpoints only and never touches
+the power, reset or virtual-media actions the same API exposes. The result appears
+as a `virtualization host` entry of type `redfish` carrying `hardware` with `model`,
+`serial`, `cpuCores`, `cpuType`, `memTotalBytes` and any volumes the BMC describes.
+
 ## 7. Reading the report
 
 Every run writes a single JSON document (pretty-printed). A trimmed device entry:
@@ -451,7 +472,10 @@ inventory. Most consumer network gear does not, so expect `hardware: null` there
 ```
 
 Sources: `snmp-hr` (HOST-RESOURCES-MIB), `libvirt` (`NodeInfo`), `vsphere`
-(`HostHardwareSummary`). Three details are handled rather than glossed over:
+(`HostHardwareSummary`), `redfish` (BMC). `model` and `serial` are populated only
+where the source reports them — also `vsphere` and `redfish`; SNMP does not.
+
+Three details are handled rather than glossed over:
 
 - **`hrStorageTable` is not a disk list.** It also holds RAM, swap, caches and every
   `tmpfs` mount, and `tmpfs` rows carry the same `hrStorageFixedDisk` type as `/`.

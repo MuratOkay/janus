@@ -129,6 +129,13 @@ public final class DiscoveryConfig {
                 case "--vcenter-insecure" -> lastCredential(config, "vcenter", option).ignoreCert = true;
                 case "--libvirt" -> config.vmCreds.add(new Credential(
                         "libvirt", nonBlank(value(args, ++i, option), option), 0, null, null));
+                case "--redfish" -> config.vmCreds.add(new Credential(
+                        "redfish", nonBlank(value(args, ++i, option), option), 443, null, null));
+                case "--redfish-user" -> lastCredential(config, "redfish", option).user = value(args, ++i, option);
+                case "--redfish-pass" -> lastCredential(config, "redfish", option).passOrKey = value(args, ++i, option);
+                case "--redfish-port" -> lastCredential(config, "redfish", option).port =
+                        positiveInt(value(args, ++i, option), option);
+                case "--redfish-insecure" -> lastCredential(config, "redfish", option).ignoreCert = true;
                 case "--libvirt-user" -> lastCredential(config, "libvirt", option).user = value(args, ++i, option);
                 case "--libvirt-pass" -> lastCredential(config, "libvirt", option).passOrKey = value(args, ++i, option);
                 default -> throw new IllegalArgumentException("Unknown option: " + option);
@@ -165,7 +172,8 @@ public final class DiscoveryConfig {
 
     private static void validateCredentials(List<Credential> credentials) {
         for (Credential credential : credentials) {
-            if (credential.kind.equals("hyperv") || credential.kind.equals("vcenter")) {
+            if (credential.kind.equals("hyperv") || credential.kind.equals("vcenter")
+                    || credential.kind.equals("redfish")) {
                 nonBlank(credential.user, "--" + credential.kind + "-user is required");
                 nonBlank(credential.passOrKey, "--" + credential.kind + "-pass is required");
             }

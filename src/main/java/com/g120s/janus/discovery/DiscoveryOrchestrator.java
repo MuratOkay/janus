@@ -90,6 +90,14 @@ public class DiscoveryOrchestrator {
                             new VCenterDiscovery.Options(c.host, c.user, c.passOrKey, c.ignoreCert), r.vms);
                     case "libvirt" -> LibvirtDiscovery.discover(
                             new LibvirtDiscovery.Options(c.host, c.user, c.passOrKey), r.vms);
+                    case "redfish" -> {
+                        // Inventory only: this returns a host entry with hardware and no
+                        // VMs, so it participates in the same dedupe as the other APIs.
+                        yield java.util.Optional.ofNullable(RedfishDiscovery.discover(
+                                        new RedfishDiscovery.Options(c.host, c.port, c.user,
+                                                c.passOrKey, c.ignoreCert)))
+                                .map(List::of).orElse(List.of());
+                    }
                     default -> List.of();
                 };
                 for (VirtualizationHost h : found) {

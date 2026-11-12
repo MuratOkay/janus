@@ -214,6 +214,27 @@ and free: `LibvirtDiscovery` uses `NodeInfo` (`cpus`, `memory` in KiB, `model`) 
 `VCenterDiscovery` uses `HostHardwareSummary` (`numCpuCores`, `cpuModel`,
 `memorySize`).
 
+### Redfish
+
+`RedfishDiscovery` reads the BMC over HTTPS: `/redfish/v1/Systems` → the first
+`ComputerSystem` → `ProcessorSummary` and `MemorySummary`, then the `Storage`
+collection for volumes. It is the only inventory source that needs no agent and
+works with the machine powered off, which makes it the right choice for servers.
+
+Three decisions worth recording:
+
+- **Read-only.** The same API can power-cycle hardware; nothing here calls those
+  endpoints, so a scan can never reboot a server.
+- **Certificate verification is skipped only on explicit request**
+  (`--redfish-insecure`), because BMCs ship self-signed certificates. The default
+  still verifies.
+- **Storage failures are swallowed.** A BMC that models volumes differently should
+  cost us the disk list, not the CPU and memory already collected.
+
+Parsing is a pure function of a JSON resource (`fromSystem`), which is what makes it
+testable without a BMC: the tests feed a realistic `ComputerSystem` payload and
+assert model, serial, cores and GiB-to-bytes conversion.
+
 ## 4.1 Host name resolution
 
 `NameResolver` is the single place that decides a device's `hostname`. Every

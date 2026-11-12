@@ -310,6 +310,8 @@ function showDetails(node) {
         ["CPU", hardwareCpu(node)],
         ["Memory", hardwareMemory(node)],
         ["Disks", hardwareDisks(node)],
+        ["Model", node.hardware?.model],
+        ["Serial", node.hardware?.serial],
         ["Hardware source", node.hardware?.source]
     ];
     for (const [key, value] of Object.entries(node.metadata || {})) rows.push([key, value]);

@@ -68,6 +68,8 @@ public class Main {
                   --hyperv HOST --hyperv-user USER --hyperv-pass PASS [--hyperv-domain DOMAIN]
                   --vcenter URL --vcenter-user USER --vcenter-pass PASS [--vcenter-insecure]
                   --libvirt URI
+                  --redfish HOST --redfish-user USER --redfish-pass PASS
+                       [--redfish-port 443] [--redfish-insecure]
                   --web [--server.port=8080] [--janus.report.path=discovery-report.json]
                 Use only on networks you are authorized to assess.
                 """);

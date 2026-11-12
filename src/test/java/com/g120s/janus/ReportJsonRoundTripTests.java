@@ -86,6 +86,8 @@ class ReportJsonRoundTripTests {
         hardware.cpuType = "Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz";
         hardware.memTotalBytes = 8159805440L;
         hardware.source = "snmp-hr";
+        hardware.model = "PowerEdge R640";
+        hardware.serial = "ABC1234";
         hardware.disks.add(new Hardware.Disk("/", "ext4", 249792131072L, 98348396544L));
         device.hardware = hardware;
         original.devices.add(device);
@@ -97,6 +99,8 @@ class ReportJsonRoundTripTests {
         assertEquals("Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz", read.cpuType);
         assertEquals(8159805440L, read.memTotalBytes);
         assertEquals("snmp-hr", read.source);
+        assertEquals("PowerEdge R640", read.model);
+        assertEquals("ABC1234", read.serial);
         assertEquals(1, read.disks.size());
         assertEquals("/", read.disks.getFirst().mount());
         assertEquals(249792131072L, read.disks.getFirst().totalBytes());
