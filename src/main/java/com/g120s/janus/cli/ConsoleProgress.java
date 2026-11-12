@@ -1,12 +1,12 @@
 package com.g120s.janus.cli;
 
+import java.io.PrintStream;
+import java.util.List;
+
 import com.g120s.janus.discovery.DiscoveryConfig;
 import com.g120s.janus.discovery.Progress;
 import com.g120s.janus.discovery.ProgressMode;
 import com.g120s.janus.model.NetworkSegment;
-
-import java.io.PrintStream;
-import java.util.List;
 
 /**
  * Prints scan progress to the console.
@@ -23,8 +23,7 @@ public final class ConsoleProgress implements Progress {
     private final boolean tty;
     private final long startedAt = System.nanoTime();
     private boolean inPlaceLine;
-    private String currentSegment;
-
+    
     /** @param tty true when writing to a terminal that supports in-place redraw */
     public ConsoleProgress(PrintStream out, boolean tty) {
         this.out = out;
@@ -62,7 +61,6 @@ public final class ConsoleProgress implements Progress {
     @Override
     public synchronized void segmentStart(NetworkSegment segment, int index, int queued, int targets) {
         clearInPlace();
-        currentSegment = segment.cidr;
         // "of >=" because the BFS discovers segments as it goes: a fixed total would
         // be a guess that changes under the user's feet.
         line(elapsed() + " crawling " + segment.cidr + "  (segment " + index
@@ -87,7 +85,6 @@ public final class ConsoleProgress implements Progress {
     @Override
     public synchronized void segmentDone(NetworkSegment segment, long millis, int devices) {
         clearInPlace();
-        currentSegment = null;
         line(elapsed() + " done " + segment.cidr + "  " + devices + " device(s)  ("
                 + (millis / 1000.0) + "s)");
     }
@@ -130,12 +127,12 @@ public final class ConsoleProgress implements Progress {
         append(text, "lldp", cfg.lldp);
         append(text, "dns", cfg.dns);
         append(text, "tls", cfg.tlsNames);
-        return text.length() == 0 ? "none" : text.toString();
+        return text.isEmpty() ? "none" : text.toString();
     }
 
     private static void append(StringBuilder text, String name, boolean enabled) {
         if (!enabled) return;
-        if (text.length() > 0) text.append(' ');
+        if (!text.isEmpty()) text.append(' ');
         text.append(name);
     }
 }

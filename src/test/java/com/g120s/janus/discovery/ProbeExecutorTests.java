@@ -1,12 +1,16 @@
 package com.g120s.janus.discovery;
 
-import org.junit.jupiter.api.Test;
-
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
 
 /**
  * The probe executor exists to make {@code --threads} mean something. A fixed
@@ -27,30 +31,40 @@ class ProbeExecutorTests {
     @Test
     void theCapLimitsProbesInFlight() throws Exception {
         int cap = 4;
-        List<Integer> observed = new CopyOnWriteArrayList<>();
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger peak = new AtomicInteger();
+        // Opens only once `cap` probes hold a permit at the same time. Until then every
+        // probe parks, so a finishing predecessor cannot free a slot for the next one and
+        // the measurement is not a race against how fast tasks complete.
+        CountDownLatch allPermitsHeld = new CountDownLatch(cap);
         try (ProbeExecutor pool = new ProbeExecutor(cap)) {
-            List<Future<?>> futures = new java.util.ArrayList<>();
+            List<Future<Integer>> futures = new ArrayList<>();
             for (int i = 0; i < 40; i++) {
                 futures.add(pool.submit(() -> {
-                    // Count how many tasks are inside the critical section at once by
-                    // parking briefly: with the semaphore honoured this cannot exceed cap.
-                    observed.add(concurrencyProbe.incrementAndGet());
+                    int concurrent = inFlight.incrementAndGet();
+                    peak.accumulateAndGet(concurrent, Math::max);
                     try {
-                        Thread.sleep(2);
+                        allPermitsHeld.countDown();
+                        // Bounded: a leaked or over-issued permit must fail this test,
+                        // not hang the build.
+                        allPermitsHeld.await(5, TimeUnit.SECONDS);
+                        return concurrent;
                     } finally {
-                        concurrencyProbe.decrementAndGet();
+                        inFlight.decrementAndGet();
                     }
-                    return null;
                 }));
             }
-            for (Future<?> future : futures) future.get();
-        } finally {
-            concurrencyProbe.set(0);
+            for (Future<Integer> future : futures) {
+                future.get(5, TimeUnit.SECONDS);
+            }
         }
 
-        assertFalse(observed.isEmpty());
-        assertTrue(observed.stream().allMatch(n -> n <= cap),
-                "observed concurrency " + observed + " exceeded the cap of " + cap);
+        // Two-sided on purpose. The upper bound is what protects the network; the lower
+        // bound is what makes --threads mean anything. A serialized executor would keep
+        // the first assertion green while wasting every thread the user asked for.
+        assertTrue(peak.get() <= cap,
+                "observed concurrency " + peak.get() + " exceeded the cap of " + cap);
+        assertEquals(cap, peak.get(), "the cap was never reached, so --threads would be wasted");
     }
 
     @Test
@@ -59,7 +73,9 @@ class ProbeExecutorTests {
             Future<?> failing = pool.submit(() -> {
                 throw new IllegalStateException("boom");
             });
-            assertThrows(java.util.concurrent.ExecutionException.class, failing::get);
+            java.util.concurrent.ExecutionException failure =
+                    assertThrows(java.util.concurrent.ExecutionException.class, failing::get);
+            assertEquals("boom", failure.getCause().getMessage());
 
             // With the permit leaked this second task would block forever.
             Future<Integer> next = pool.submit(() -> 42);
@@ -69,10 +85,11 @@ class ProbeExecutorTests {
 
     @Test
     void capIsAtLeastOneEvenWhenMisconfigured() {
-        assertTrue(new ProbeExecutor(0).maxConcurrent() >= 1);
-        assertTrue(new ProbeExecutor(-5).maxConcurrent() >= 1);
+        try (ProbeExecutor zeroCap = new ProbeExecutor(0)) {
+            assertTrue(zeroCap.maxConcurrent() >= 1);
+        }
+        try (ProbeExecutor negativeCap = new ProbeExecutor(-5)) {
+            assertTrue(negativeCap.maxConcurrent() >= 1);
+        }
     }
-
-    private static final java.util.concurrent.atomic.AtomicInteger concurrencyProbe =
-            new java.util.concurrent.atomic.AtomicInteger();
 }

@@ -1,14 +1,18 @@
 package com.g120s.janus.discovery;
 
-import com.g120s.janus.model.DiscoveryResult;
-import com.g120s.janus.model.NetworkSegment;
-import org.junit.jupiter.api.Test;
-
-import java.net.InetAddress;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
+
+import com.g120s.janus.model.DiscoveryResult;
+import com.g120s.janus.model.NetworkSegment;
 /**
  * Progress must never be guessed. The total number of segments is unknown while the
  * BFS runs, so the display reports "of >=" rather than inventing a denominator, and
@@ -80,7 +84,7 @@ class ProgressTests {
     }
 
     @Test
-    void scanningANetworkThisHostIsNotOnIsReported() throws Exception {
+    void scanningANetworkThisHostIsNotOnIsReported() {
         // The failure this guards against: pointing Janus at a range the machine is
         // not attached to used to yield a long silent scan and "0 devices" with an
         // empty warning list, which reads exactly like a genuinely empty network.
@@ -230,7 +234,7 @@ class ProgressTests {
     }
 
     @Test
-    void anUnreachableOffLinkSeedExplainsNatInTheReport() throws Exception {
+    void anUnreachableOffLinkSeedExplainsNatInTheReport() {
         // The real-world case: a mesh node in router mode NATs its LAN, so the subnet
         // exists and is healthy yet is invisible from the far side. The scan used to
         // grind through ten minutes of timeouts and report nothing.
@@ -283,8 +287,9 @@ class ProgressTests {
         assertEquals(ProgressMode.NONE,
                 DiscoveryConfig.fromArgs(new String[] {"--quiet"}).progress);
         assertEquals(ProgressMode.AUTO, DiscoveryConfig.fromArgs(new String[] {}).progress);
-        assertThrows(IllegalArgumentException.class,
-                () -> DiscoveryConfig.fromArgs(new String[] {"--progress", "loud"}));
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> DiscoveryConfig.fromArgs(new String[] {"--progress", "loud"}));
+        assertNotNull(exception.getMessage());
     }
 
     private static DiscoveryConfig quietConfig() {
